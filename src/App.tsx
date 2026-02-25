@@ -60,46 +60,6 @@ function statusLabel(s:TravelStatus) {
   return s==="DONE"?"Done":s==="IN_PROGRESS"?"In progress":s==="NOT_STARTED"?"Not started":"TBD";
 }
 function uid() { return Math.random().toString(36).slice(2)+Date.now().toString(36); }
-function dateKey(d: Date): string { return startOfDay(d).toISOString().slice(0,10); }
-
-function expandRecurring(templates: RecurringEvent[], date: Date): LifeEvent[] {
-  const dow = date.getDay();
-  return templates
-    .filter(t => {
-      if (t.pattern === "daily") return true;
-      if (t.pattern === "weekdays") return dow >= 1 && dow <= 5;
-      if (t.pattern === "weekly") return dow === (t.anchorDay ?? 1);
-      if (t.pattern === "custom") return (t.customDays ?? []).includes(dow);
-      return false;
-    })
-    .map(t => ({
-      id: `recur-${t.id}-${dateKey(date)}`,
-      title: t.title, lane: t.lane, type: t.type,
-      status: "not_started" as EventStatus,
-      date: startOfDay(date),
-      startHour: t.startHour, endHour: t.endHour,
-      notes: t.notes, tags: [...t.tags],
-    }));
-}
-
-// ---------- localStorage ----------
-const LS_EVENTS = "myatlas_events";
-const LS_RECURRING = "myatlas_recurring";
-const LS_NOTES = "myatlas_notes";
-
-function lsGet<T>(key: string, fallback: T): T {
-  try { const raw = localStorage.getItem(key); if (!raw) return fallback; return JSON.parse(raw) as T; }
-  catch { return fallback; }
-}
-function lsSet(key: string, val: unknown) {
-  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
-}
-function serializeEvents(evs: LifeEvent[]) {
-  return evs.map(e => ({...e, date: e.date.toISOString()}));
-}
-function deserializeEvents(raw: any[]): LifeEvent[] {
-  return raw.map(e => ({...e, date: new Date(e.date)}));
-}
 
 // ---------- Design tokens ----------
 const palette = {
@@ -150,6 +110,7 @@ function EventModal({ initialDate, initialHour, event, onSave, onDelete, onClose
   recurring?: RecurringEvent[]; onSaveRecurring?: (r: RecurringEvent) => void; onDeleteRecurring?: (id: string) => void;
 }) {
   const isEditing = !!event;
+  const pal = palette; // local alias so RecurringSection can access it
   const [title, setTitle] = useState(event?.title ?? "");
   const [lane, setLane] = useState<EventLane>(event?.lane ?? "Work");
   const [type, setType] = useState<EventType>(event?.type ?? "task");
@@ -328,7 +289,7 @@ function EventModal({ initialDate, initialHour, event, onSave, onDelete, onClose
           )}
         </div>
 
-        {/* Recurring */}
+        {/* Recurring — only show when creating/editing and recurring props provided */}
         {onSaveRecurring && (
           <RecurringSection
             lane={lane} title={title} type={type} startHour={startHour} endHour={endHour}
@@ -376,6 +337,55 @@ function EventModal({ initialDate, initialHour, event, onSave, onDelete, onClose
   );
 }
 
+// ---------- localStorage helpers ----------
+const LS_EVENTS = "myatlas_events";
+const LS_RECURRING = "myatlas_recurring";
+const LS_NOTES = "myatlas_notes";
+
+function lsGet<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch { return fallback; }
+}
+function lsSet(key: string, val: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+}
+
+// Serialize/deserialize LifeEvent dates (JSON loses Date objects)
+function serializeEvents(evs: LifeEvent[]) {
+  return evs.map(e => ({...e, date: e.date.toISOString()}));
+}
+function deserializeEvents(raw: any[]): LifeEvent[] {
+  return raw.map(e => ({...e, date: new Date(e.date)}));
+}
+
+function dateKey(d: Date): string {
+  return startOfDay(d).toISOString().slice(0,10);
+}
+
+// Expand recurring templates into LifeEvent instances for a given date
+function expandRecurring(templates: RecurringEvent[], date: Date): LifeEvent[] {
+  const dow = date.getDay(); // 0=Sun
+  return templates
+    .filter(t => {
+      if (t.pattern === "daily") return true;
+      if (t.pattern === "weekdays") return dow >= 1 && dow <= 5;
+      if (t.pattern === "weekly") return dow === (t.anchorDay ?? 1);
+      if (t.pattern === "custom") return (t.customDays ?? []).includes(dow);
+      return false;
+    })
+    .map(t => ({
+      id: `recur-${t.id}-${dateKey(date)}`,
+      title: t.title, lane: t.lane, type: t.type,
+      status: "not_started" as EventStatus,
+      date: startOfDay(date),
+      startHour: t.startHour, endHour: t.endHour,
+      notes: t.notes, tags: [...t.tags],
+    }));
+}
+
 // ---------- Main App ----------
 export default function App() {
   const travelTrips: TravelTrip[] = useMemo(() => [
@@ -393,38 +403,9 @@ export default function App() {
     },
   ], []);
 
-  const [events, setEvents] = useState<LifeEvent[]>(() => {
-    const stored = lsGet<any[]>(LS_EVENTS, null as any);
-    if (stored && stored.length > 0) return deserializeEvents(stored);
-    // First load — seed events for Apr 8, 2026
-    const d = startOfDay(new Date(2026,3,8));
-    return [
-      { id:"seed-1", title:"Houston arrival", lane:"Travel", type:"milestone",
-        status:"not_started", date:d, startHour:8, endHour:10,
-        tags:["houston"], notes:"Landing at IAH, pick up bags." },
-      { id:"seed-2", title:"Morning run", lane:"Health", type:"task",
-        status:"not_started", date:d, startHour:6, endHour:7,
-        tags:["houston","routine"] },
-      { id:"seed-3", title:"Client call", lane:"Work", type:"task",
-        status:"not_started", date:d, startHour:9, endHour:10,
-        tags:["houston"], notes:"Reschedule if needed — overlaps arrival window." },
-      { id:"seed-4", title:"Rental car pickup", lane:"Money", type:"task",
-        status:"not_started", date:d, startHour:10, endHour:11,
-        tags:["houston"] },
-      { id:"seed-5", title:"Hotel check-in", lane:"Family", type:"task",
-        status:"not_started", date:d, startHour:11, endHour:12,
-        tags:["houston"] },
-      { id:"seed-6", title:"Street photography", lane:"Creative", type:"plan",
-        status:"not_started", date:d, startHour:14, endHour:17,
-        tags:["houston"], notes:"Downtown Houston. Bring the 35mm." },
-      { id:"seed-7", title:"Conference session", lane:"Work", type:"plan",
-        status:"not_started", date:d, startHour:14, endHour:16,
-        tags:["conference"] },
-      { id:"seed-8", title:"Family dinner", lane:"Family", type:"plan",
-        status:"not_started", date:d, startHour:19, endHour:21,
-        tags:["houston"] },
-    ];
-  });
+  const [events, setEvents] = useState<LifeEvent[]>(() =>
+    deserializeEvents(lsGet<any[]>(LS_EVENTS, []))
+  );
   const [recurring, setRecurring] = useState<RecurringEvent[]>(() =>
     lsGet<RecurringEvent[]>(LS_RECURRING, [])
   );
@@ -436,9 +417,34 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState<Date>(startOfDay(new Date(2026,0,1)));
   const [notesOpen, setNotesOpen] = useState(false);
 
+  // Persist events whenever they change
   useEffect(() => { lsSet(LS_EVENTS, serializeEvents(events)); }, [events]);
   useEffect(() => { lsSet(LS_RECURRING, recurring); }, [recurring]);
   useEffect(() => { lsSet(LS_NOTES, dayNotes); }, [dayNotes]);
+
+  // Day note helpers
+  const getNoteForDate = useCallback((d: Date) => {
+    return dayNotes.find(n => n.date === dateKey(d))?.text ?? "";
+  }, [dayNotes]);
+  const setNoteForDate = useCallback((d: Date, text: string) => {
+    setDayNotes(prev => {
+      const key = dateKey(d);
+      const exists = prev.findIndex(n => n.date === key);
+      if (exists >= 0) {
+        const next = [...prev]; next[exists] = {date:key, text}; return next;
+      }
+      return [...prev, {date:key, text}];
+    });
+  }, []);
+
+  // Merge real events + expanded recurring for a given date
+  const eventsForDate = useCallback((d: Date): LifeEvent[] => {
+    const real = events.filter(e => startOfDay(e.date).getTime()===startOfDay(d).getTime());
+    const recurExpanded = expandRecurring(recurring, d);
+    // Don't double-show if a real event has the same recur-id
+    const realIds = new Set(real.map(e => e.id));
+    return [...real, ...recurExpanded.filter(r => !realIds.has(r.id))];
+  }, [events, recurring]);
 
   const addOrUpdateEvent = useCallback((e: LifeEvent) => {
     setEvents(prev => {
@@ -452,26 +458,6 @@ export default function App() {
     setEvents(prev => prev.filter(e => e.id !== id));
   }, []);
 
-  const getNoteForDate = useCallback((d: Date) => {
-    return dayNotes.find(n => n.date === dateKey(d))?.text ?? "";
-  }, [dayNotes]);
-
-  const setNoteForDate = useCallback((d: Date, text: string) => {
-    setDayNotes(prev => {
-      const key = dateKey(d);
-      const exists = prev.findIndex(n => n.date === key);
-      if (exists >= 0) { const next = [...prev]; next[exists] = {date:key, text}; return next; }
-      return [...prev, {date:key, text}];
-    });
-  }, []);
-
-  const eventsForDate = useCallback((d: Date): LifeEvent[] => {
-    const real = events.filter(e => startOfDay(e.date).getTime()===startOfDay(d).getTime());
-    const recurExpanded = expandRecurring(recurring, d);
-    const realIds = new Set(real.map(e => e.id));
-    return [...real, ...recurExpanded.filter(r => !realIds.has(r.id))];
-  }, [events, recurring]);
-
   const saveRecurring = useCallback((r: RecurringEvent) => {
     setRecurring(prev => {
       const idx = prev.findIndex(x => x.id === r.id);
@@ -479,7 +465,6 @@ export default function App() {
       return [...prev, r];
     });
   }, []);
-
   const deleteRecurring = useCallback((id: string) => {
     setRecurring(prev => prev.filter(r => r.id !== id));
   }, []);
@@ -522,25 +507,24 @@ export default function App() {
               {mode !== "pods" && (
                 <button onClick={() => setMode("pods")} style={buttonStyle()}>Pods</button>
               )}
-              {/* Day mode: + Event and ← Week (one back button only) */}
               {mode === "day" && <>
                 <button onClick={() => openNew(selectedDate)}
                   style={buttonStyle({background:"rgba(20,19,18,0.06)",fontWeight:600})}>+ Event</button>
                 <button onClick={() => setMode("week")} style={buttonStyle()}>← Week</button>
               </>}
-              {/* Week mode: Today / Prev / Next */}
               {mode === "week" && <>
                 <button onClick={() => setSelectedDate(startOfDay(new Date()))} style={buttonStyle()}>Today</button>
                 <button onClick={() => setSelectedDate(addDays(selectedDate,-7))} style={buttonStyle()}>← Prev</button>
                 <button onClick={() => setSelectedDate(addDays(selectedDate,7))} style={buttonStyle()}>Next →</button>
               </>}
+              {/* Notes panel toggle — visible on week + day */}
               {mode !== "pods" && (
                 <button onClick={() => setNotesOpen(o => !o)}
                   style={buttonStyle({
                     background: notesOpen ? "rgba(20,19,18,0.08)" : "transparent",
                     fontWeight: notesOpen ? 600 : 400,
                   })}>
-                  Notes
+                  📝 Notes
                 </button>
               )}
             </div>
@@ -566,7 +550,9 @@ export default function App() {
           ) : mode === "week" ? (
             <WeekShell
               days={weekDays} selectedDate={selectedDate} palette={palette}
-              travelTrips={travelTrips} eventsForDate={eventsForDate} weekStart={weekStart}
+              travelTrips={travelTrips}
+              events={events} recurring={recurring} eventsForDate={eventsForDate}
+              weekStart={weekStart}
               onPickDay={d => { setSelectedDate(startOfDay(d)); setMode("day"); }}
               onPickTrip={t => {
                 const ts = startOfDay(t.start).getTime();
@@ -585,15 +571,17 @@ export default function App() {
         </div>
       </div>
 
+      {/* Floating Notes Panel */}
       {notesOpen && mode !== "pods" && (
         <NotesPanel
           date={selectedDate}
           note={getNoteForDate(selectedDate)}
-          onChangeNote={(text: string) => setNoteForDate(selectedDate, text)}
+          onChangeNote={text => setNoteForDate(selectedDate, text)}
           onClose={() => setNotesOpen(false)}
           palette={palette}/>
       )}
 
+      {/* Recurring Events Manager — accessible from notes panel */}
       {modal.open && (
         <EventModal
           key={modal.event?.id ?? `new-${modal.date?.toISOString()}-${modal.hour}`}
@@ -615,7 +603,7 @@ function RecurringSection({ lane, title, type, startHour, endHour, notes, tags,
 }) {
   const [open, setOpen] = useState(false);
   const [pattern, setPattern] = useState<RecurPattern>("weekly");
-  const [customDays, setCustomDays] = useState<number[]>([1]);
+  const [customDays, setCustomDays] = useState<number[]>([1]); // Mon default
   const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
   const existing = recurring.filter(r => r.lane===lane && r.title===title);
@@ -632,6 +620,12 @@ function RecurringSection({ lane, title, type, startHour, endHour, notes, tags,
     setOpen(false);
   };
 
+  const inputBase: React.CSSProperties = {
+    background:"rgba(255,255,255,0.55)", border:`1px solid ${palette.hairline}`,
+    borderRadius:10, padding:"7px 10px", fontSize:12, color:palette.graphite,
+    outline:"none", fontFamily:"inherit", cursor:"pointer",
+  };
+
   return (
     <div style={{marginBottom:18, borderTop:`1px solid ${palette.hairline}`, paddingTop:14}}>
       <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:open?12:0}}>
@@ -643,6 +637,7 @@ function RecurringSection({ lane, title, type, startHour, endHour, notes, tags,
         }}>{open?"▲ hide":"+ make recurring"}</button>
       </div>
 
+      {/* Existing recurring templates for this event */}
       {existing.length > 0 && (
         <div style={{display:"flex", flexWrap:"wrap", gap:6, marginBottom:8}}>
           {existing.map(r => (
@@ -698,7 +693,7 @@ function RecurringSection({ lane, title, type, startHour, endHour, notes, tags,
 
           {pattern==="weekly" && (
             <div style={{fontSize:11, color:"rgba(20,19,18,0.50)"}}>
-              Will repeat every {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][new Date().getDay()]} · change after saving if needed
+              Will repeat every {DOW[new Date().getDay()]} · change after saving if needed
             </div>
           )}
 
@@ -728,6 +723,7 @@ function NotesPanel({ date, note, onChangeNote, onClose, palette }: {
 
   return (
     <>
+      {/* Backdrop — click to close */}
       <div onClick={onClose} style={{position:"fixed", inset:0, zIndex:90, background:"transparent"}}/>
       <div style={{
         position:"fixed", top:80, right:24, width:300, zIndex:91,
@@ -737,6 +733,7 @@ function NotesPanel({ date, note, onChangeNote, onClose, palette }: {
         display:"flex", flexDirection:"column",
         animation:"slideInRight 0.18s ease",
       }}>
+        {/* Panel header */}
         <div style={{padding:"14px 16px 10px", borderBottom:`1px solid ${palette.hairline}`,
           display:"flex", justifyContent:"space-between", alignItems:"center"}}>
           <div>
@@ -752,6 +749,7 @@ function NotesPanel({ date, note, onChangeNote, onClose, palette }: {
           }}>✕</button>
         </div>
 
+        {/* Textarea */}
         <textarea
           ref={textRef}
           value={note}
@@ -765,10 +763,11 @@ function NotesPanel({ date, note, onChangeNote, onClose, palette }: {
             minHeight:220,
           }}/>
 
+        {/* Footer */}
         <div style={{padding:"8px 16px 12px", borderTop:`1px solid ${palette.hairline}`,
           fontSize:10, color:"rgba(20,19,18,0.35)", letterSpacing:"0.06em",
           display:"flex", justifyContent:"space-between"}}>
-          <span>In-memory · not saved yet</span>
+          <span>Saved automatically</span>
           {note.length > 0 && <span>{note.length} chars</span>}
         </div>
       </div>
@@ -904,11 +903,11 @@ function YearDial({ palette, highlight }: { palette: any; highlight: boolean }) 
 }
 
 // ---------- Week Shell ----------
-function WeekShell({ days, selectedDate, onPickDay, onPickTrip, palette, travelTrips, eventsForDate, weekStart }: {
+function WeekShell({ days, selectedDate, onPickDay, onPickTrip, palette, travelTrips, events, recurring, eventsForDate, weekStart }: {
   days: Date[]; selectedDate: Date; onPickDay: (d: Date) => void;
   onPickTrip: (t: TravelTrip) => void; palette: any;
-  travelTrips: TravelTrip[];
-  eventsForDate: (d: Date) => LifeEvent[];
+  travelTrips: TravelTrip[]; events: LifeEvent[];
+  recurring: RecurringEvent[]; eventsForDate: (d: Date) => LifeEvent[];
   weekStart: Date;
 }) {
   const tripsThisWeek = useMemo(() => travelTrips.filter(t => overlapsWeek(weekStart,t)), [travelTrips,weekStart]);
@@ -1091,11 +1090,12 @@ function DayShell({ date, palette, travelTrips, events, onAddEvent, onEditEvent 
     [travelTrips, date]
   );
 
-  const fmtH = (h?: number) => {
-    if (h===undefined) return "–";
-    const a=h>=12?"pm":"am", hh=h%12===0?12:h%12;
-    return `${hh}${a}`;
-  };
+  const AFFINITY_PAIRS: [EventLane, EventLane][] = [
+    ["Travel","Creative"], ["Travel","Work"], ["Travel","Family"],
+    ["Travel","Health"], ["Work","Creative"], ["Family","Health"],
+  ];
+  const hasAffinity = (a: EventLane, b: EventLane) =>
+    AFFINITY_PAIRS.some(([x,y]) => (x===a&&y===b)||(x===b&&y===a));
 
   // Hours grid for swimlane — 6am to midnight
   const SWIM_START = 6, SWIM_END = 24;
@@ -1200,29 +1200,37 @@ function DayShell({ date, palette, travelTrips, events, onAddEvent, onEditEvent 
               );
             })}
 
-            {/* Always-on hands — one per event, center → arc, lane color */}
-            {events.map(ev => {
-              const li=lanes.indexOf(ev.lane);
-              if (li<0 || ev.startHour===undefined) return null;
-              const sh=ev.startHour, eh=ev.endHour??sh+1;
-              const mid=arcMidpoint(laneR[li],sh,eh);
-              const color=LANE_COLORS[ev.lane];
-              const isH=hoveredEventId===ev.id;
-              const isL=hoveredEventId?getLinkedEvents(hoveredEventId).some(e=>e.id===ev.id):false;
-              const isDim=!!hoveredEventId&&!isH&&!isL;
-              return (
-                <line key={`hand-${ev.id}`}
-                  x1={cx} y1={cy} x2={mid.x} y2={mid.y}
-                  stroke={color}
-                  strokeWidth={isH?3:isL?2:1.5}
-                  strokeLinecap="round"
-                  style={{
-                    opacity:isDim?0.12:isH?1:isL?0.85:0.38,
-                    transition:"opacity 0.20s,stroke-width 0.20s",
-                    pointerEvents:"none",
-                  }}/>
-              );
-            })}
+            {/* Constellation threads */}
+            {hoveredEventId && (() => {
+              const hovEv = events.find(e => e.id===hoveredEventId);
+              if (!hovEv) return null;
+              const hSh=hovEv.startHour??9, hEh=hovEv.endHour??hSh+1;
+              const hLI=lanes.indexOf(hovEv.lane);
+              const hMid=arcMidpoint(laneR[hLI],hSh,hEh);
+              const hoursOverlap=(s1:number,e1:number,s2:number,e2:number)=>s1<e2&&s2<e1;
+
+              return events.filter(e=>e.id!==hoveredEventId).map(lev => {
+                const lSh=lev.startHour??9, lEh=lev.endHour??lSh+1;
+                const sharesTag=lev.tags.some(t=>hovEv.tags.includes(t));
+                const affiliated=hasAffinity(hovEv.lane,lev.lane);
+                const conflicts=hoursOverlap(hSh,hEh,lSh,lEh)&&lev.lane!==hovEv.lane;
+                if (!sharesTag&&!affiliated&&!conflicts) return null;
+                const isConflict=conflicts&&!sharesTag&&!affiliated;
+                const color=isConflict?"rgba(190,50,40,0.65)":"rgba(60,100,180,0.55)";
+                const dash=isConflict?"4 4":"5 5";
+                const lLI=lanes.indexOf(lev.lane);
+                const lMid=arcMidpoint(laneR[lLI],lSh,lEh);
+                return (
+                  <g key={`thread-${lev.id}`} style={{pointerEvents:"none"}}>
+                    <path d={`M ${hMid.x} ${hMid.y} L ${lMid.x} ${lMid.y}`}
+                      fill="none" stroke={color} strokeWidth={1.8} strokeDasharray={dash}
+                      style={{animation:"threadFadeIn 0.22s ease forwards"}}/>
+                    <circle cx={hMid.x} cy={hMid.y} r={4} fill={color} opacity={0.9}/>
+                    <circle cx={lMid.x} cy={lMid.y} r={4} fill={color} opacity={0.9}/>
+                  </g>
+                );
+              });
+            })()}
 
             {/* Event arcs */}
             {events.map(ev => {
