@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>myATLAS</title>
+  <style>
+    :root {
+      --paper:    #f1efe9;
+      --card:     #fbfaf6;
+      --graphite: #141312;
+      --hairline: rgba(20,19,18,0.10);
+      --faint:    rgba(20,19,18,0.06);
+      --soft:     rgba(20,19,18,0.18);
+      --accent:   rgba(80,110,140,0.50);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--paper);
+      color: var(--graphite);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    #splash {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 28px;
+      text-align: center;
+      padding: 40px 24px;
+      opacity: 0;
+      transform: translateY(10px);
+      animation: splashIn 0.6s cubic-bezier(0.16,1,0.3,1) 0.1s forwards;
+    }
+
+    @keyframes splashIn {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ---- Wordmark ---- */
+    #wordmark {
+      line-height: 1.1;
+      opacity: 0;
+      animation: wordmarkReveal 0.9s cubic-bezier(0.16,1,0.3,1) 0.3s forwards;
+    }
+
+    #wordmark-main {
+      display: block;
+      font-size: clamp(32px, 7vw, 56px);
+      font-weight: 300;
+      letter-spacing: 0.22em;
+      text-transform: none;
+      color: var(--graphite);
+    }
+
+    #wordmark-sub {
+      display: block;
+      font-size: clamp(10px, 2vw, 12px);
+      letter-spacing: 0.30em;
+      text-transform: uppercase;
+      color: rgba(20,19,18,0.42);
+      margin-top: 6px;
+    }
+
+    @keyframes wordmarkReveal {
+      from { opacity: 0; letter-spacing: 0.38em; }
+      to   { opacity: 1; letter-spacing: 0.22em; }
+    }
+
+    /* ---- Dial ---- */
+    #dial-wrapper {
+      width: min(220px, 55vw);
+      height: min(220px, 55vw);
+    }
+
+    #dial {
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
+
+    .tick-ring {
+      transform-origin: 100px 100px;
+      opacity: 0;
+      animation: dialSpin 1.5s cubic-bezier(0.33,1,0.68,1) 0.5s forwards;
+    }
+
+    @keyframes dialSpin {
+      from { transform: rotate(-90deg); opacity: 0; }
+      to   { transform: rotate(270deg); opacity: 1; }
+    }
+
+    /* ---- Tagline ---- */
+    #tagline {
+      font-size: clamp(10px, 2.2vw, 12px);
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: rgba(20,19,18,0.48);
+      opacity: 0;
+      animation: textUp 0.7s ease 1.7s forwards;
+    }
+
+    /* ---- Enter button ---- */
+    #enter-btn {
+      appearance: none;
+      background: transparent;
+      border: 1px solid var(--hairline);
+      border-radius: 999px;
+      padding: 10px 22px;
+      font-size: 12px;
+      font-family: inherit;
+      letter-spacing: 0.10em;
+      color: var(--graphite);
+      cursor: pointer;
+      opacity: 0;
+      animation: textUp 0.7s ease 2.0s forwards;
+      transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    }
+
+    #enter-btn:hover {
+      background: rgba(20,19,18,0.05);
+      border-color: var(--soft);
+      transform: translateX(3px);
+    }
+
+    @keyframes textUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ---- Reduced motion ---- */
+    @media (prefers-reduced-motion: reduce) {
+      #splash, #wordmark, .tick-ring, #tagline, #enter-btn {
+        animation-duration: 0.1s !important;
+        animation-delay: 0s !important;
+      }
+      @keyframes dialSpin {
+        from { transform: rotate(0deg); opacity: 0; }
+        to   { transform: rotate(0deg); opacity: 1; }
+      }
+    }
+  </style>
+</head>
+<body>
+
+<div id="splash">
+
+  <!-- Wordmark -->
+  <div id="wordmark">
+    <span id="wordmark-main">my<strong style="font-weight:600">ATLAS</strong></span>
+    <span id="wordmark-sub">by A.Kembi</span>
+  </div>
+
+  <!-- Radial Dial -->
+  <div id="dial-wrapper">
+    <svg id="dial" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+
+      <!-- Accent halo -->
+      <circle cx="100" cy="100" r="94"
+        fill="none" stroke="rgba(80,110,140,0.50)" stroke-width="1.2" opacity="0.4"/>
+
+      <!-- Outer ring -->
+      <circle cx="100" cy="100" r="80"
+        fill="none" stroke="#141312" stroke-width="1.4"/>
+
+      <!-- Inner ring -->
+      <circle cx="100" cy="100" r="66"
+        fill="none" stroke="rgba(20,19,18,0.06)" stroke-width="1"/>
+
+      <!-- Lane rings (static, ~60° arcs staggered around the dial) -->
+      <g class="lane-rings">
+        <!-- Work: r=64, arc starts at ~0° (top), ~60° sweep -->
+        <circle cx="100" cy="100" r="64"
+          fill="none" stroke="#4f6eb0" stroke-width="5" opacity="0.35"
+          stroke-dasharray="67 335" stroke-dashoffset="0"
+          stroke-linecap="round"/>
+        <!-- Family: r=54, arc starts at ~60° -->
+        <circle cx="100" cy="100" r="54"
+          fill="none" stroke="#c07840" stroke-width="5" opacity="0.35"
+          stroke-dasharray="57 282" stroke-dashoffset="-90"
+          stroke-linecap="round"/>
+        <!-- Health: r=44, arc starts at ~120° -->
+        <circle cx="100" cy="100" r="44"
+          fill="none" stroke="#4d9e6a" stroke-width="5" opacity="0.35"
+          stroke-dasharray="46 230" stroke-dashoffset="-180"
+          stroke-linecap="round"/>
+        <!-- Travel: r=34, arc starts at ~180° -->
+        <circle cx="100" cy="100" r="34"
+          fill="none" stroke="#7c5cb5" stroke-width="5" opacity="0.35"
+          stroke-dasharray="36 178" stroke-dashoffset="-265"
+          stroke-linecap="round"/>
+        <!-- Money: r=24, arc starts at ~240° -->
+        <circle cx="100" cy="100" r="24"
+          fill="none" stroke="#a08c2a" stroke-width="5" opacity="0.35"
+          stroke-dasharray="25 126" stroke-dashoffset="-350"
+          stroke-linecap="round"/>
+        <!-- Creative: r=14, arc starts at ~300° -->
+        <circle cx="100" cy="100" r="14"
+          fill="none" stroke="#b84060" stroke-width="5" opacity="0.35"
+          stroke-dasharray="15 73" stroke-dashoffset="-430"
+          stroke-linecap="round"/>
+      </g>
+
+      <!-- Tick ring — this group spins -->
+      <g class="tick-ring">
+        <!-- 12 ticks: inner at r=75, outer at r=86, every 3rd heavier -->
+        <line x1="100" y1="14"  x2="100" y2="25" stroke="rgba(20,19,18,0.22)" stroke-width="2.0" stroke-linecap="round"/><!-- 0 -->
+        <line x1="139.6" y1="23.3" x2="133.2" y2="33.5" stroke="rgba(20,19,18,0.22)" stroke-width="1.2" stroke-linecap="round"/><!-- 1 -->
+        <line x1="166.7" y1="50.4" x2="158.5" y2="57.0" stroke="rgba(20,19,18,0.22)" stroke-width="1.2" stroke-linecap="round"/><!-- 2 -->
+        <line x1="175" y1="100" x2="164" y2="100" stroke="rgba(20,19,18,0.22)" stroke-width="2.0" stroke-linecap="round"/><!-- 3 -->
+        <line x1="166.7" y1="149.6" x2="158.5" y2="143.0" stroke="rgba(20,19,18,0.22)" stroke-width="1.2" stroke-linecap="round"/><!-- 4 -->
+        <line x1="139.6" y1="176.7" x2="133.2" y2="166.5" stroke="rgba(20,19,18,0.22)" stroke-width="1.2" stroke-linecap="round"/><!-- 5 -->
+        <line x1="100" y1="186" x2="100" y2="175" stroke="rgba(20,19,18,0.22)" stroke-width="2.0" stroke-linecap="round"/><!-- 6 -->
+        <line x1="60.4" y1="176.7" x2="66.8" y2="166.5" stroke="rgba(20,19,18,0.22)" stroke-width="1.2" stroke-linecap="round"/><!-- 7 -->
+        <line x1="33.3" y1="149.6" x2="41.5" y2="143.0" stroke="rgba(20,19,18,0.22)" stroke-width="1.2" stroke-linecap="round"/><!-- 8 -->
+        <line x1="25" y1="100" x2="36" y2="100" stroke="rgba(20,19,18,0.22)" stroke-width="2.0" stroke-linecap="round"/><!-- 9 -->
+        <line x1="33.3" y1="50.4" x2="41.5" y2="57.0" stroke="rgba(20,19,18,0.22)" stroke-width="1.2" stroke-linecap="round"/><!-- 10 -->
+        <line x1="60.4" y1="23.3" x2="66.8" y2="33.5" stroke="rgba(20,19,18,0.22)" stroke-width="1.2" stroke-linecap="round"/><!-- 11 -->
+      </g>
+
+      <!-- Centre dot -->
+      <circle cx="100" cy="100" r="5" fill="#141312" opacity="0.85"/>
+    </svg>
+  </div>
+
+  <!-- Tagline -->
+  <div id="tagline">Plan your life. One orbit at a time.</div>
+
+  <!-- Enter button -->
+  <button id="enter-btn">Enter &rarr;</button>
+
+</div>
+
+<script>
+  (function () {
+    var navigated = false;
+
+    function navigateTo() {
+      if (navigated) return;
+      navigated = true;
+      document.body.style.transition = 'opacity 0.4s ease';
+      document.body.style.opacity = '0';
+      setTimeout(function () {
+        window.location.href = '/';
+      }, 400);
+    }
+
+    document.getElementById('enter-btn').addEventListener('click', function (e) {
+      e.stopPropagation();
+      navigateTo();
+    });
+  })();
+</script>
+
+</body>
+</html>
