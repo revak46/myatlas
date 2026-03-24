@@ -675,7 +675,8 @@ function LaunchScreen({ onEnter }: { onEnter: (mode: ViewMode) => void }) {
 }
 
 export default function App() {
-  const travelTrips: TravelTrip[] = useMemo(() => [
+  // Hardcoded planned trips — fallback and unconfirmed future trips
+  const PLANNED_TRIPS = useMemo<TravelTrip[]>(() => [
     {
       id:"houston-2026", title:"Houston", location:"Houston, TX",
       start:new Date(2026,3,8), end:new Date(2026,3,12), tags:["Travel","Family?"],
@@ -689,6 +690,42 @@ export default function App() {
       notes:"Flights on installment payments. Exact dates + lodging/transport TBD.",
     },
   ], []);
+
+  // Confirmed trips from Helm Capture /trips — parsed from real bookings + Gmail
+  const [confirmedTrips, setConfirmedTrips] = useState<TravelTrip[]>([]);
+  useEffect(() => {
+    if (!helmToken) return;
+    fetch("http://localhost:7777/trips", {
+      headers: { Authorization: `Bearer ${helmToken}` },
+    })
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then((data: Array<{
+        id: string; title: string; location: string;
+        start: string; end: string; tags: string[];
+        status: { flight: string; lodging: string; transport: string };
+        notes?: string;
+      }>) => {
+        setConfirmedTrips(data.map(t => ({
+          id:       t.id,
+          title:    t.title,
+          location: t.location,
+          start:    new Date(t.start + "T12:00:00"),
+          end:      new Date(t.end   + "T12:00:00"),
+          tags:     t.tags,
+          status:   t.status as TravelTrip["status"],
+          notes:    t.notes ?? "",
+        })));
+      })
+      .catch(() => {}); // silent — PLANNED_TRIPS serve as fallback
+  }, [helmToken]);
+
+  // Merge: confirmed trips take precedence; planned trips fill any gaps
+  const travelTrips: TravelTrip[] = useMemo(() => {
+    if (confirmedTrips.length === 0) return PLANNED_TRIPS;
+    const confirmedTitles = new Set(confirmedTrips.map(t => t.title.toLowerCase()));
+    const extras = PLANNED_TRIPS.filter(p => !confirmedTitles.has(p.title.toLowerCase()));
+    return [...confirmedTrips, ...extras];
+  }, [confirmedTrips, PLANNED_TRIPS]);
 
   const [events, setEvents] = useState<LifeEvent[]>(() =>
     deserializeEvents(lsGet<Record<string, unknown>[]>(LS_EVENTS, []))
