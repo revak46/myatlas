@@ -468,7 +468,7 @@ function LaunchScreen({ onEnter }: { onEnter: (mode: ViewMode) => void }) {
         } catch { return false; }
       };
       const [cap, sys] = await Promise.all([
-        check("http://localhost:7777/signals"),
+        check("http://localhost:7777/signals", helmToken || undefined),
         check("http://localhost:7778/api/health", helmToken || undefined),
       ]);
       setHelmCaptureUp(cap);
@@ -855,7 +855,7 @@ export default function App() {
         {/* Body */}
         <div style={{padding:22,flex:1,minHeight:0,overflowY:"auto"}}>
           {mode === "helm" ? (
-            <HelmView palette={palette} travelTrips={travelTrips}/>
+            <HelmView palette={palette} travelTrips={travelTrips} token={helmToken}/>
           ) : mode === "pods" ? (
             <PodsTimeline
               currentPodStartYear={2026} palette={palette} travelTrips={travelTrips}
@@ -1798,16 +1798,19 @@ type HelmDigestData = {
   suggestions: { pillar: string; action: string }[];
 };
 
-function HelmDigest() {
+function HelmDigest({ token }: { token: string }) {
   const [digest, setDigest] = useState<HelmDigestData | null>(null);
   const [open, setOpen] = useState(true);
 
   useEffect(() => {
-    fetch("http://localhost:7777/digest")
+    const headers: Record<string, string> = token
+      ? { Authorization: `Bearer ${token}` }
+      : {};
+    fetch("http://localhost:7777/digest", { headers })
       .then(r => r.ok ? r.json() : Promise.reject())
       .then((d: HelmDigestData) => setDigest(d))
       .catch(() => setDigest(null));
-  }, []);
+  }, [token]);
 
   if (!digest) return null;
 
@@ -1940,14 +1943,17 @@ function HelmDigest() {
   );
 }
 
-function HelmView({ palette: _palette, travelTrips: _travelTrips }: { palette: Palette; travelTrips: TravelTrip[] }) {
+function HelmView({ palette: _palette, travelTrips: _travelTrips, token }: { palette: Palette; travelTrips: TravelTrip[]; token: string }) {
   const [signals, setSignals] = useState<HelmSignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTag, setActiveTag] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("http://localhost:7777/signals")
+    const headers: Record<string, string> = token
+      ? { Authorization: `Bearer ${token}` }
+      : {};
+    fetch("http://localhost:7777/signals", { headers })
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -1969,7 +1975,7 @@ function HelmView({ palette: _palette, travelTrips: _travelTrips }: { palette: P
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [token]);
 
   const allTags = useMemo(() => {
     const s = new Set<string>();
@@ -2016,7 +2022,7 @@ function HelmView({ palette: _palette, travelTrips: _travelTrips }: { palette: P
     <div style={{display:"flex",flexDirection:"column",gap:0}}>
 
       {/* Intelligence Digest */}
-      <HelmDigest />
+      <HelmDigest token={token} />
 
       {/* Tag filter bar */}
       {allTags.length > 0 && (
