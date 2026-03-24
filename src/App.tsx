@@ -1840,9 +1840,8 @@ function HelmDigest({ token }: { token: string }) {
   const [open, setOpen] = useState(true);
 
   useEffect(() => {
-    const headers: Record<string, string> = token
-      ? { Authorization: `Bearer ${token}` }
-      : {};
+    if (token === "") return; // wait for token before fetching
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
     fetch("http://localhost:7777/digest", { headers })
       .then(r => r.ok ? r.json() : Promise.reject())
       .then((d: HelmDigestData) => setDigest(d))
@@ -1987,9 +1986,14 @@ function HelmView({ palette: _palette, travelTrips: _travelTrips, token }: { pal
   const [activeTag, setActiveTag] = useState<string | null>(null);
 
   useEffect(() => {
-    const headers: Record<string, string> = token
-      ? { Authorization: `Bearer ${token}` }
-      : {};
+    // Don't attempt the first fetch until the token has been resolved.
+    // helmToken starts as "" and is populated async via Tauri invoke —
+    // firing without it would always 401 and leave a stale error on screen.
+    // The effect re-runs the moment the token arrives, so nothing is missed.
+    if (token === "") { setLoading(false); return; }
+
+    setLoading(true);
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
     fetch("http://localhost:7777/signals", { headers })
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -2009,6 +2013,7 @@ function HelmView({ palette: _palette, travelTrips: _travelTrips, token }: { pal
           return { ...s, signal: sig };
         });
         setSignals(clean);
+        setError(null);
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
