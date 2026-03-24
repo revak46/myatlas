@@ -1,9 +1,10 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 const WEEK_STARTS_ON_MONDAY = true;
 const DAY_START_HOUR = 4;
 
-type ViewMode = "pods" | "week" | "day";
+type ViewMode = "launch" | "pods" | "week" | "day" | "helm";
 type TravelStatus = "DONE" | "IN_PROGRESS" | "NOT_STARTED" | "TBD";
 type EventLane = "Work" | "Family" | "Health" | "Travel" | "Money" | "Creative";
 type EventType = "plan" | "reflection" | "task" | "milestone";
@@ -36,6 +37,16 @@ type RecurringEvent = {
 
 type DayNote = { date: string; text: string }; // date = "YYYY-MM-DD"
 
+type HelmSignal = {
+  id: string;
+  timestamp: string;
+  pillar: string;
+  signal: string;
+  tags: string[];
+  source_image: string;
+  confirmed: boolean;
+};
+
 // ---------- Utilities ----------
 function startOfDay(d: Date) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
 function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
@@ -62,7 +73,13 @@ function statusLabel(s:TravelStatus) {
 function uid() { return Math.random().toString(36).slice(2)+Date.now().toString(36); }
 
 // ---------- Design tokens ----------
-const palette = {
+type Palette = {
+  paper: string; card: string; graphite: string;
+  hairline: string; faint: string; soft: string; accent: string;
+  reflection: string; stabilization: string; regrowth: string;
+};
+
+const palette: Palette = {
   paper:"#f1efe9", card:"#fbfaf6", graphite:"#141312",
   hairline:"rgba(20,19,18,0.10)", faint:"rgba(20,19,18,0.06)",
   soft:"rgba(20,19,18,0.18)", accent:"rgba(80,110,140,0.50)",
@@ -110,7 +127,7 @@ function EventModal({ initialDate, initialHour, event, onSave, onDelete, onClose
   recurring?: RecurringEvent[]; onSaveRecurring?: (r: RecurringEvent) => void; onDeleteRecurring?: (id: string) => void;
 }) {
   const isEditing = !!event;
-  const pal = palette; // local alias so RecurringSection can access it
+  // const pal = palette; // removed unused alias
   const [title, setTitle] = useState(event?.title ?? "");
   const [lane, setLane] = useState<EventLane>(event?.lane ?? "Work");
   const [type, setType] = useState<EventType>(event?.type ?? "task");
@@ -350,15 +367,15 @@ function lsGet<T>(key: string, fallback: T): T {
   } catch { return fallback; }
 }
 function lsSet(key: string, val: unknown) {
-  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch { /* storage unavailable */ }
 }
 
 // Serialize/deserialize LifeEvent dates (JSON loses Date objects)
 function serializeEvents(evs: LifeEvent[]) {
   return evs.map(e => ({...e, date: e.date.toISOString()}));
 }
-function deserializeEvents(raw: any[]): LifeEvent[] {
-  return raw.map(e => ({...e, date: new Date(e.date)}));
+function deserializeEvents(raw: Record<string, unknown>[]): LifeEvent[] {
+  return raw.map(e => ({...e, date: new Date(e.date as string)})) as LifeEvent[];
 }
 
 function dateKey(d: Date): string {
@@ -387,6 +404,276 @@ function expandRecurring(templates: RecurringEvent[], date: Date): LifeEvent[] {
 }
 
 // ---------- Main App ----------
+// ─────────────────────────────────────────────────────────────────────────────
+// LaunchScreen
+// ─────────────────────────────────────────────────────────────────────────────
+function LaunchScreen({ onEnter }: { onEnter: (mode: ViewMode) => void }) {
+  const [helmCaptureUp, setHelmCaptureUp] = useState<boolean | null>(null);
+  const [helmSystemUp,  setHelmSystemUp]  = useState<boolean | null>(null);
+  const [starting, setStarting] = useState<Record<string, boolean>>({});
+  const [helmToken, setHelmToken] = useState<string>("");
+  const [tick, setTick] = useState(0);
+
+  // Load Helm auth token from the file Helm System writes on first run
+  useEffect(() => {
+    const loadToken = async () => {
+      try {
+        const t = await invoke<string>("read_helm_token");
+        if (t) setHelmToken(t);
+      } catch { /* Helm not started yet — health ping will show offline */ }
+    };
+    loadToken();
+    // Retry every 30s in case Helm System starts after MyAtlas
+    const iv = setInterval(loadToken, 30000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const launchService = async (key: "helm_capture" | "helm_system", setStatus: (v: boolean) => void) => {
+    setStarting(s => ({ ...s, [key]: true }));
+    try {
+      // Rust: spawns the Python process, waits ~2s, then opens a native window
+      await invoke("launch_service", { service: key });
+      setStatus(true);
+    } catch (e) {
+      console.error("launch_service failed:", e);
+    } finally {
+      setStarting(s => ({ ...s, [key]: false }));
+    }
+  };
+
+  const greeting = useMemo(() => {
+    const h = new Date().getHours();
+    return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  }, []);
+
+  const dateLabel = useMemo(() =>
+    new Date().toLocaleDateString(undefined, { weekday:"long", month:"long", day:"numeric" })
+  , []);
+
+  const timeLabel = useMemo(() =>
+    new Date().toLocaleTimeString(undefined, { hour:"numeric", minute:"2-digit" })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  , [tick]);
+
+  // Ping services
+  useEffect(() => {
+    const ping = async () => {
+      const check = async (url: string, token?: string) => {
+        try {
+          const headers: Record<string, string> = token
+            ? { Authorization: `Bearer ${token}` }
+            : {};
+          const r = await fetch(url, { signal: AbortSignal.timeout(2000), headers });
+          return r.ok || r.status < 500;
+        } catch { return false; }
+      };
+      const [cap, sys] = await Promise.all([
+        check("http://localhost:7777/signals"),
+        check("http://localhost:7778/api/health", helmToken || undefined),
+      ]);
+      setHelmCaptureUp(cap);
+      setHelmSystemUp(sys);
+    };
+    ping();
+    const iv = setInterval(ping, 15000);
+    return () => clearInterval(iv);
+  }, [helmToken]);
+
+  // Tick clock
+  useEffect(() => {
+    const iv = setInterval(() => setTick(t => t + 1), 30000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const statusDot = (up: boolean | null): React.CSSProperties => ({
+    width: 6, height: 6, borderRadius: "50%",
+    background: up === null ? "rgba(224,221,214,0.25)" : up ? "#4d9e6a" : "#b84060",
+    boxShadow: up ? "0 0 5px #4d9e6a88" : up === false ? "0 0 5px #b8406088" : "none",
+    flexShrink: 0,
+  });
+
+  const statusText = (up: boolean | null): React.CSSProperties => ({
+    fontSize: 10, letterSpacing: "0.07em",
+    color: up === null ? "rgba(224,221,214,0.28)" : up ? "#4d9e6a" : "rgba(184,64,96,0.85)",
+  });
+
+  const s: Record<string, React.CSSProperties> = {
+    root: {
+      height: "100vh", width: "100%", overflow: "hidden",
+      background: "radial-gradient(ellipse at 28% 35%, rgba(30,45,110,0.45) 0%, #08080f 62%)",
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      fontFamily: "ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif",
+      color: "#e0ddd6", padding: "0 24px 32px",
+      userSelect: "none", position: "relative",
+    },
+    topBadge: {
+      fontSize: 10, letterSpacing: "0.22em", textTransform: "uppercase",
+      color: "rgba(224,221,214,0.28)", marginBottom: 36,
+    },
+    hexWrap: {
+      width: 72, height: 72, display: "flex", alignItems: "center", justifyContent: "center",
+      marginBottom: 24, position: "relative",
+    },
+    greeting: {
+      fontSize: 13, letterSpacing: "0.08em", color: "rgba(224,221,214,0.55)", marginBottom: 6,
+    },
+    name: {
+      fontSize: 32, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.1, marginBottom: 4,
+      background: "linear-gradient(135deg, #e0ddd6 30%, #8eaaff 100%)",
+      WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+    },
+    dateLine: {
+      fontSize: 12, color: "rgba(224,221,214,0.38)", letterSpacing: "0.06em", marginBottom: 52,
+    },
+    cards: {
+      display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16,
+      width: "min(860px,92vw)", marginBottom: 48,
+    },
+    card: {
+      background: "rgba(255,255,255,0.03)",
+      border: "1px solid rgba(90,130,255,0.14)",
+      borderRadius: 20, padding: "24px 22px",
+      cursor: "pointer", transition: "all 0.18s ease",
+      display: "flex", flexDirection: "column", gap: 0,
+    },
+    cardIcon: {
+      fontSize: 22, marginBottom: 14, lineHeight: 1,
+    },
+    cardTitle: {
+      fontSize: 15, fontWeight: 650, color: "#e0ddd6", marginBottom: 5,
+    },
+    cardSub: {
+      fontSize: 11, color: "rgba(224,221,214,0.40)", letterSpacing: "0.04em",
+      lineHeight: 1.55, flex: 1, marginBottom: 16,
+    },
+    statusRow: {
+      display: "flex", alignItems: "center", gap: 6, marginTop: "auto",
+    },
+    footer: {
+      fontSize: 10, letterSpacing: "0.07em", color: "rgba(224,221,214,0.18)",
+      display: "flex", gap: 20, alignItems: "center",
+    },
+  };
+
+  const cardHover = (e: React.MouseEvent<HTMLDivElement>, enter: boolean) => {
+    const el = e.currentTarget as HTMLDivElement;
+    el.style.background = enter
+      ? "rgba(90,130,255,0.08)"
+      : "rgba(255,255,255,0.03)";
+    el.style.borderColor = enter
+      ? "rgba(90,130,255,0.35)"
+      : "rgba(90,130,255,0.14)";
+    el.style.transform = enter ? "translateY(-2px)" : "none";
+    el.style.boxShadow = enter ? "0 12px 40px rgba(90,130,255,0.12)" : "none";
+  };
+
+  return (
+    <div style={s.root}>
+      {/* Tauri v2 drag region — data-tauri-drag-region makes this area move the window */}
+      <div data-tauri-drag-region="" style={{
+        position: "absolute", top: 0, left: 0, right: 0, height: 52,
+        zIndex: 10, cursor: "grab",
+      }}/>
+
+      <div style={s.topBadge}>Intelligence Infrastructure · Helm</div>
+
+      {/* Hexagon logo */}
+      <div style={s.hexWrap}>
+        <svg width="72" height="72" viewBox="0 0 72 72" fill="none">
+          <polygon points="36,4 64,20 64,52 36,68 8,52 8,20"
+            fill="rgba(14,20,52,0.9)" stroke="#5a82ff" strokeWidth="1.5"/>
+          <polygon points="36,14 56,25 56,47 36,58 16,47 16,25"
+            fill="rgba(20,28,60,0.8)" stroke="rgba(90,130,255,0.35)" strokeWidth="1"/>
+          <text x="36" y="40" textAnchor="middle" dominantBaseline="middle"
+            fill="#e0ddd6" fontSize="15" fontWeight="700" fontFamily="ui-sans-serif,system-ui,sans-serif"
+            letterSpacing="1">MA</text>
+          <circle cx="54" cy="22" r="4" fill="#5a82ff" opacity="0.8"/>
+        </svg>
+      </div>
+
+      <div style={s.greeting}>{greeting}, Yemi</div>
+      <div style={s.name}>MyAtlas</div>
+      <div style={s.dateLine}>{dateLabel} · {timeLabel}</div>
+
+      {/* Navigation cards */}
+      <div style={s.cards} className="no-drag">
+
+        {/* MyAtlas Dashboard */}
+        <div
+          style={s.card}
+          onClick={() => onEnter("pods")}
+          onMouseEnter={e => cardHover(e, true)}
+          onMouseLeave={e => cardHover(e, false)}>
+          <div style={s.cardIcon}>◎</div>
+          <div style={s.cardTitle}>MyAtlas</div>
+          <div style={s.cardSub}>
+            Life planning dashboard — Pods timeline, week calendar, day view, and Helm intelligence.
+          </div>
+          <div style={s.statusRow}>
+            <div style={statusDot(true)}/>
+            <span style={statusText(true)}>Ready</span>
+          </div>
+        </div>
+
+        {/* Helm Capture */}
+        <div
+          style={s.card}
+          onClick={() => {
+            if (!starting["helm_capture"]) { launchService("helm_capture", setHelmCaptureUp); }
+          }}
+          onMouseEnter={e => cardHover(e, true)}
+          onMouseLeave={e => cardHover(e, false)}>
+          <div style={s.cardIcon}>⬡</div>
+          <div style={s.cardTitle}>Helm Capture</div>
+          <div style={s.cardSub}>
+            Drop images to extract intelligence signals. Tag, pillar-assign, and feed your Helm layer.
+          </div>
+          <div style={s.statusRow}>
+            <div style={statusDot(helmCaptureUp)}/>
+            <span style={statusText(helmCaptureUp)}>
+              {starting["helm_capture"] ? "Starting…"
+                : helmCaptureUp === null ? "Checking…"
+                : helmCaptureUp ? "Running · port 7777 — click to open"
+                : "Offline — click to start"}
+            </span>
+          </div>
+        </div>
+
+        {/* Helm System */}
+        <div
+          style={s.card}
+          onClick={() => {
+            if (!starting["helm_system"]) { launchService("helm_system", setHelmSystemUp); }
+          }}
+          onMouseEnter={e => cardHover(e, true)}
+          onMouseLeave={e => cardHover(e, false)}>
+          <div style={s.cardIcon}>⬡</div>
+          <div style={s.cardTitle}>Helm System</div>
+          <div style={s.cardSub}>
+            Mac Mini health monitor — CPU, memory, disk, component management, and unified logs.
+          </div>
+          <div style={s.statusRow}>
+            <div style={statusDot(helmSystemUp)}/>
+            <span style={statusText(helmSystemUp)}>
+              {starting["helm_system"] ? "Starting…"
+                : helmSystemUp === null ? "Checking…"
+                : helmSystemUp ? "Running · port 7778 — click to open"
+                : "Offline — click to start"}
+            </span>
+          </div>
+        </div>
+
+      </div>
+
+      <div style={s.footer}>
+        <span>⬡ Helm · Intelligence Infrastructure</span>
+        <span>·</span>
+        <span>Mac Mini · Chicago</span>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const travelTrips: TravelTrip[] = useMemo(() => [
     {
@@ -404,7 +691,7 @@ export default function App() {
   ], []);
 
   const [events, setEvents] = useState<LifeEvent[]>(() =>
-    deserializeEvents(lsGet<any[]>(LS_EVENTS, []))
+    deserializeEvents(lsGet<Record<string, unknown>[]>(LS_EVENTS, []))
   );
   const [recurring, setRecurring] = useState<RecurringEvent[]>(() =>
     lsGet<RecurringEvent[]>(LS_RECURRING, [])
@@ -413,7 +700,7 @@ export default function App() {
     lsGet<DayNote[]>(LS_NOTES, [])
   );
   const [modal, setModal] = useState<ModalState>({open:false});
-  const [mode, setMode] = useState<ViewMode>("pods");
+  const [mode, setMode] = useState<ViewMode>("launch");
   const [selectedDate, setSelectedDate] = useState<Date>(startOfDay(new Date(2026,0,1)));
   const [notesOpen, setNotesOpen] = useState(false);
 
@@ -484,22 +771,34 @@ export default function App() {
   const headerTitle = useMemo(() => {
     if (mode==="pods") return "Pods · Birds-eye timeline";
     if (mode==="week") return `Week · ${headerRange}`;
+    if (mode==="helm") return "⬡ Helm · Intelligence Layer";
     return `Day · ${formatDow(selectedDate)} · ${formatMonthDay(selectedDate)}`;
   }, [mode, headerRange, selectedDate]);
 
+  if (mode === "launch") {
+    return <LaunchScreen onEnter={(m) => setMode(m)} />;
+  }
+
   return (
-    <div style={{minHeight:"100vh",background:palette.paper,display:"grid",placeItems:"center",
+    <div style={{height:"100vh",overflow:"hidden",background:palette.paper,
+      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-start",
       padding:24,color:palette.graphite,
       fontFamily:"ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif"}}>
       <div style={{width:"min(1120px,94vw)",background:palette.card,borderRadius:28,
-        border:`1px solid ${palette.hairline}`,boxShadow:"0 18px 60px rgba(0,0,0,0.08)",overflow:"hidden"}}>
+        border:`1px solid ${palette.hairline}`,boxShadow:"0 18px 60px rgba(0,0,0,0.08)",overflow:"hidden",
+        display:"flex",flexDirection:"column",flex:1,minHeight:0}}>
 
         {/* Header */}
         <div style={{padding:22,paddingBottom:14}}>
           <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"baseline"}}>
             <div>
-              <div style={{fontSize:11,letterSpacing:"0.20em",textTransform:"uppercase",
-                color:"rgba(20,19,18,0.58)"}}>MyAtlas</div>
+              <div
+                style={{fontSize:11,letterSpacing:"0.20em",textTransform:"uppercase",
+                  color:"rgba(20,19,18,0.58)",cursor:"pointer"}}
+                onClick={() => setMode("launch")}
+                title="Return to home">
+                ⬡ MyAtlas
+              </div>
               <div style={{fontSize:18,fontWeight:650,lineHeight:1.15,marginTop:6}}>{headerTitle}</div>
             </div>
             <div style={{display:"flex",gap:10,alignItems:"center"}}>
@@ -507,6 +806,17 @@ export default function App() {
               {mode !== "pods" && (
                 <button onClick={() => setMode("pods")} style={buttonStyle()}>Pods</button>
               )}
+              {/* ⬡ Helm: always visible */}
+              <button
+                onClick={() => setMode(m => m === "helm" ? "pods" : "helm")}
+                style={buttonStyle({
+                  background: mode === "helm" ? "#0d0d1a" : "transparent",
+                  color: mode === "helm" ? "#5a82ff" : palette.graphite,
+                  border: mode === "helm" ? "1px solid #5a82ff" : `1px solid ${palette.hairline}`,
+                  fontWeight: mode === "helm" ? 600 : 400,
+                })}>
+                ⬡ Helm
+              </button>
               {mode === "day" && <>
                 <button onClick={() => openNew(selectedDate)}
                   style={buttonStyle({background:"rgba(20,19,18,0.06)",fontWeight:600})}>+ Event</button>
@@ -534,15 +844,19 @@ export default function App() {
               ? "Reflection → Stabilization → ReGrowth · click a year to enter Week view."
               : mode==="week"
                 ? "Click any day to open it · travel chips drill down."
-                : "Click the dial to add · hover arcs to see connections · same tag = linked."}
+                : mode==="helm"
+                  ? "Life signals by pillar · captured via Helm Drop · tag-filtered."
+                  : "Click the dial to add · hover arcs to see connections · same tag = linked."}
           </div>
         </div>
 
         <div style={{borderTop:`1px solid ${palette.hairline}`}}/>
 
         {/* Body */}
-        <div style={{padding:22}}>
-          {mode === "pods" ? (
+        <div style={{padding:22,flex:1,minHeight:0,overflowY:"auto"}}>
+          {mode === "helm" ? (
+            <HelmView palette={palette} travelTrips={travelTrips}/>
+          ) : mode === "pods" ? (
             <PodsTimeline
               currentPodStartYear={2026} palette={palette} travelTrips={travelTrips}
               onPickYear={y => { setSelectedDate(startOfDay(new Date(y,0,1))); setMode("week"); }}
@@ -599,7 +913,7 @@ function RecurringSection({ lane, title, type, startHour, endHour, notes, tags,
   lane: EventLane; title: string; type: EventType;
   startHour: number; endHour: number; notes: string; tags: string[];
   recurring: RecurringEvent[]; onSave: (r: RecurringEvent) => void;
-  onDelete: (id: string) => void; palette: any;
+  onDelete: (id: string) => void; palette: Palette;
 }) {
   const [open, setOpen] = useState(false);
   const [pattern, setPattern] = useState<RecurPattern>("weekly");
@@ -620,11 +934,11 @@ function RecurringSection({ lane, title, type, startHour, endHour, notes, tags,
     setOpen(false);
   };
 
-  const inputBase: React.CSSProperties = {
-    background:"rgba(255,255,255,0.55)", border:`1px solid ${palette.hairline}`,
-    borderRadius:10, padding:"7px 10px", fontSize:12, color:palette.graphite,
-    outline:"none", fontFamily:"inherit", cursor:"pointer",
-  };
+//   const inputBase: React.CSSProperties = {
+//     background:"rgba(255,255,255,0.55)", border:`1px solid ${palette.hairline}`,
+//     borderRadius:10, padding:"7px 10px", fontSize:12, color:palette.graphite,
+//     outline:"none", fontFamily:"inherit", cursor:"pointer",
+//   };
 
   return (
     <div style={{marginBottom:18, borderTop:`1px solid ${palette.hairline}`, paddingTop:14}}>
@@ -716,7 +1030,7 @@ function RecurringSection({ lane, title, type, startHour, endHour, notes, tags,
 // ---------- Notes Panel (floating) ----------
 function NotesPanel({ date, note, onChangeNote, onClose, palette }: {
   date: Date; note: string; onChangeNote: (t: string) => void;
-  onClose: () => void; palette: any;
+  onClose: () => void; palette: Palette;
 }) {
   const textRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { textRef.current?.focus(); }, []);
@@ -784,7 +1098,7 @@ function NotesPanel({ date, note, onChangeNote, onClose, palette }: {
 // ---------- Pods ----------
 function PodsTimeline({ currentPodStartYear, onPickYear, onPickTrip, palette, travelTrips }: {
   currentPodStartYear: number; onPickYear: (y: number) => void;
-  onPickTrip: (t: TravelTrip) => void; palette: any; travelTrips: TravelTrip[];
+  onPickTrip: (t: TravelTrip) => void; palette: Palette; travelTrips: TravelTrip[];
 }) {
   const pods = useMemo(() => {
     const p = currentPodStartYear-2, n = currentPodStartYear+2;
@@ -793,7 +1107,7 @@ function PodsTimeline({ currentPodStartYear, onPickYear, onPickTrip, palette, tr
       {chapter:"Stabilization", years:[currentPodStartYear,currentPodStartYear+1] as [number,number], atmosphere:palette.stabilization, emphasis:"current" as const},
       {chapter:"ReGrowth", years:[n,n+1] as [number,number], atmosphere:palette.regrowth, emphasis:"future" as const},
     ];
-  }, [currentPodStartYear]);
+  }, [currentPodStartYear, palette]);
 
   const currentPodTrips = useMemo(() => {
     const s = new Date(currentPodStartYear,0,1), e = new Date(currentPodStartYear+1,11,31);
@@ -884,7 +1198,7 @@ function PodsTimeline({ currentPodStartYear, onPickYear, onPickTrip, palette, tr
   );
 }
 
-function YearDial({ palette, highlight }: { palette: any; highlight: boolean }) {
+function YearDial({ palette, highlight }: { palette: Palette; highlight: boolean }) {
   const cx=80, cy=80, r=56;
   return (
     <svg viewBox="0 0 160 160" width="100%" style={{display:"block", maxWidth:140}}>
@@ -903,9 +1217,9 @@ function YearDial({ palette, highlight }: { palette: any; highlight: boolean }) 
 }
 
 // ---------- Week Shell ----------
-function WeekShell({ days, selectedDate, onPickDay, onPickTrip, palette, travelTrips, events, recurring, eventsForDate, weekStart }: {
+function WeekShell({ days, selectedDate, onPickDay, onPickTrip, palette, travelTrips, eventsForDate, weekStart }: {
   days: Date[]; selectedDate: Date; onPickDay: (d: Date) => void;
-  onPickTrip: (t: TravelTrip) => void; palette: any;
+  onPickTrip: (t: TravelTrip) => void; palette: Palette;
   travelTrips: TravelTrip[]; events: LifeEvent[];
   recurring: RecurringEvent[]; eventsForDate: (d: Date) => LifeEvent[];
   weekStart: Date;
@@ -982,7 +1296,7 @@ function WeekShell({ days, selectedDate, onPickDay, onPickTrip, palette, travelT
   );
 }
 
-function MiniDayDial({ palette, events }: { palette: any; events: LifeEvent[] }) {
+function MiniDayDial({ palette, events }: { palette: Palette; events: LifeEvent[] }) {
   const size=110, cx=55, cy=55, rOuter=40;
   const laneR = [32,27,22,17,12,7];
   const lanes: EventLane[] = ["Work","Family","Health","Travel","Money","Creative"];
@@ -1012,7 +1326,7 @@ function MiniDayDial({ palette, events }: { palette: any; events: LifeEvent[] })
 
 // ---------- Day Shell ----------
 function DayShell({ date, palette, travelTrips, events, onAddEvent, onEditEvent }: {
-  date: Date; palette: any; travelTrips: TravelTrip[]; events: LifeEvent[];
+  date: Date; palette: Palette; travelTrips: TravelTrip[]; events: LifeEvent[];
   onAddEvent: (hour?: number) => void; onEditEvent: (e: LifeEvent) => void;
 }) {
   const size=640, cx=320, cy=320, rOuter=270;
@@ -1080,7 +1394,7 @@ function DayShell({ date, palette, travelTrips, events, onAddEvent, onEditEvent 
   const handleSvgMouseLeave = useCallback(() => {
     setHoveredLane(null);
     setHoveredEventId(null);
-  }, []);
+  }, [setHoveredLane, setHoveredEventId]);
 
   // Clicking the dial no longer opens add-event — arcs only open edit
   const handleSvgClick = (e: React.MouseEvent<SVGSVGElement>) => { e.stopPropagation(); };
@@ -1425,6 +1739,412 @@ function DayShell({ date, palette, travelTrips, events, onAddEvent, onEditEvent 
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- HelmView ----------
+const HELM_PILLARS: { key: string; label: string; icon: string; color: string; bg: string; insight: string }[] = [
+  {
+    key: "Growth",
+    label: "Growth & Development",
+    icon: "⬡",
+    color: "#4f6eb0",
+    bg: "rgba(79,110,176,0.07)",
+    insight: "Future: Helm can cross-reference DBA trainings & conferences with your Travel calendar — find events near Houston, Lagos, or any upcoming trip.",
+  },
+  {
+    key: "Travel",
+    label: "Travel",
+    icon: "✈",
+    color: "#7c5cb5",
+    bg: "rgba(124,92,181,0.07)",
+    insight: "Future: Helm can suggest optimal trip windows based on Work load and Family commitments.",
+  },
+  {
+    key: "Family",
+    label: "Family",
+    icon: "◎",
+    color: "#c07840",
+    bg: "rgba(192,120,64,0.07)",
+    insight: "Future: Helm can flag Family signals that overlap with Travel periods.",
+  },
+  {
+    key: "Photography",
+    label: "Photography",
+    icon: "◈",
+    color: "#b84060",
+    bg: "rgba(184,64,96,0.07)",
+    insight: "Future: Helm can cluster location ideas from Photography signals onto your Travel map.",
+  },
+  {
+    key: "Finances",
+    label: "Finances",
+    icon: "◇",
+    color: "#a08c2a",
+    bg: "rgba(160,140,42,0.07)",
+    insight: "Future: Helm can surface spending signals aligned with upcoming trips or goals.",
+  },
+];
+
+type HelmDigestData = {
+  generated_at: string;
+  week_count: number;
+  total_count: number;
+  active_pillars: string[];
+  bridges: { tag: string; pillars: string[] }[];
+  top_tags: { tag: string; count: number }[];
+  suggestions: { pillar: string; action: string }[];
+};
+
+function HelmDigest() {
+  const [digest, setDigest] = useState<HelmDigestData | null>(null);
+  const [open, setOpen] = useState(true);
+
+  useEffect(() => {
+    fetch("http://localhost:7777/digest")
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then((d: HelmDigestData) => setDigest(d))
+      .catch(() => setDigest(null));
+  }, []);
+
+  if (!digest) return null;
+
+  const pillarColor: Record<string, string> = {
+    Growth:"#4f6eb0", Travel:"#7c5cb5", Family:"#c07840",
+    Photography:"#b84060", Finances:"#a08c2a",
+  };
+
+  return (
+    <div style={{
+      marginBottom: 20,
+      background: "#0d0d1a",
+      borderRadius: 16,
+      border: "1px solid rgba(90,130,255,0.20)",
+      overflow: "hidden",
+    }}>
+      {/* Digest header row */}
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "14px 18px", background: "none", border: "none", cursor: "pointer",
+          fontFamily: "inherit",
+        }}>
+        <div style={{display:"flex", alignItems:"center", gap:10}}>
+          <span style={{color:"#5a82ff", fontSize:15}}>⬡</span>
+          <span style={{color:"#e8e6e0", fontSize:12, fontWeight:700, letterSpacing:"0.12em",
+            textTransform:"uppercase"}}>Helm Intelligence Digest</span>
+          <span style={{
+            background:"rgba(90,130,255,0.15)", color:"#5a82ff",
+            fontSize:10, fontWeight:600, padding:"2px 8px", borderRadius:999,
+            letterSpacing:"0.08em",
+          }}>
+            {digest.week_count} this week
+          </span>
+        </div>
+        <span style={{color:"rgba(232,230,224,0.40)", fontSize:11}}>{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div style={{padding:"0 18px 18px", display:"flex", flexDirection:"column", gap:16}}>
+          <div style={{height:1, background:"rgba(90,130,255,0.12)"}}/>
+
+          {/* Suggestions row */}
+          <div>
+            <div style={{fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase",
+              color:"rgba(232,230,224,0.40)", marginBottom:10}}>Action Items</div>
+            <div style={{display:"flex", flexDirection:"column", gap:8}}>
+              {digest.suggestions.map(s => (
+                <div key={s.pillar} style={{
+                  display:"flex", gap:10, alignItems:"flex-start",
+                  background:"rgba(255,255,255,0.04)", borderRadius:10, padding:"10px 12px",
+                  border:"1px solid rgba(255,255,255,0.06)",
+                }}>
+                  <span style={{
+                    fontSize:10, fontWeight:700, letterSpacing:"0.10em",
+                    color: pillarColor[s.pillar] ?? "#5a82ff",
+                    background: `${pillarColor[s.pillar] ?? "#5a82ff"}22`,
+                    padding:"2px 8px", borderRadius:999, whiteSpace:"nowrap", flexShrink:0,
+                    border: `1px solid ${pillarColor[s.pillar] ?? "#5a82ff"}44`,
+                    marginTop:1,
+                  }}>
+                    {s.pillar.toUpperCase()}
+                  </span>
+                  <span style={{fontSize:12, color:"rgba(232,230,224,0.78)", lineHeight:1.5}}>
+                    {s.action}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Cross-pillar bridges */}
+          {digest.bridges.length > 0 && (
+            <div>
+              <div style={{fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase",
+                color:"rgba(232,230,224,0.40)", marginBottom:8}}>Cross-Pillar Bridges</div>
+              <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
+                {digest.bridges.map(b => (
+                  <div key={b.tag} style={{
+                    background:"rgba(90,130,255,0.10)", border:"1px solid rgba(90,130,255,0.25)",
+                    borderRadius:999, padding:"4px 12px", display:"flex", alignItems:"center", gap:6,
+                  }}>
+                    <span style={{fontSize:11, color:"#5a82ff", fontWeight:600}}>{b.tag}</span>
+                    <span style={{fontSize:10, color:"rgba(232,230,224,0.40)"}}>
+                      {b.pillars.join(" · ")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {digest.bridges.length === 0 && (
+            <div style={{fontSize:11, color:"rgba(232,230,224,0.30)", letterSpacing:"0.04em",
+              fontStyle:"italic"}}>
+              No cross-pillar bridges yet — capture signals across more pillars to unlock connections.
+            </div>
+          )}
+
+          {/* Top tags */}
+          {digest.top_tags.length > 0 && (
+            <div>
+              <div style={{fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase",
+                color:"rgba(232,230,224,0.40)", marginBottom:8}}>Momentum Tags</div>
+              <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
+                {digest.top_tags.map(t => (
+                  <div key={t.tag} style={{
+                    background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.10)",
+                    borderRadius:999, padding:"3px 10px", fontSize:11,
+                    color:"rgba(232,230,224,0.60)",
+                  }}>
+                    {t.tag}
+                    <span style={{marginLeft:5, fontSize:10,
+                      color:"rgba(232,230,224,0.30)"}}>×{t.count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{fontSize:10, color:"rgba(232,230,224,0.22)", letterSpacing:"0.04em",
+            borderTop:"1px solid rgba(90,130,255,0.10)", paddingTop:10}}>
+            Generated {new Date(digest.generated_at).toLocaleString(undefined,
+              {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})} · {digest.total_count} total signals
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HelmView({ palette: _palette, travelTrips: _travelTrips }: { palette: Palette; travelTrips: TravelTrip[] }) {
+  const [signals, setSignals] = useState<HelmSignal[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("http://localhost:7777/signals")
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data: HelmSignal[]) => {
+        // Normalise: strip raw JSON blobs from signal field
+        const clean = data.map(s => {
+          let sig = s.signal || "";
+          if (sig.startsWith("```")) {
+            const inner = sig.split("```")[1] || "";
+            try {
+              const parsed = JSON.parse(inner.startsWith("json") ? inner.slice(4) : inner);
+              sig = (parsed as { signal?: string }).signal || sig;
+            } catch { /* leave as-is */ }
+          }
+          return { ...s, signal: sig };
+        });
+        setSignals(clean);
+      })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const allTags = useMemo(() => {
+    const s = new Set<string>();
+    signals.forEach(sig => (sig.tags || []).forEach(t => s.add(t)));
+    return Array.from(s).sort();
+  }, [signals]);
+
+  const filtered = useMemo(() => {
+    if (!activeTag) return signals;
+    return signals.filter(s => (s.tags || []).includes(activeTag));
+  }, [signals, activeTag]);
+
+  const byPillar = useMemo(() => {
+    const m: Record<string, HelmSignal[]> = {};
+    HELM_PILLARS.forEach(p => { m[p.key] = []; });
+    filtered.forEach(s => {
+      if (m[s.pillar]) m[s.pillar].push(s);
+      else m["Growth"].push(s);
+    });
+    return m;
+  }, [filtered]);
+
+  if (loading) return (
+    <div style={{padding:40,textAlign:"center",color:"rgba(20,19,18,0.40)",fontSize:13,letterSpacing:"0.08em"}}>
+      ⬡ &nbsp;Loading Helm signals…
+    </div>
+  );
+
+  if (error) return (
+    <div style={{padding:40}}>
+      <div style={{fontSize:13,color:"#b84060",marginBottom:8,fontWeight:600}}>
+        ⚠ Could not reach Helm server
+      </div>
+      <div style={{fontSize:12,color:"rgba(20,19,18,0.50)"}}>
+        Make sure <code style={{fontSize:11}}>python3 ~/Project_Atlas/helm-capture/helm_web.py</code> is running on port 7777.
+      </div>
+      <div style={{marginTop:6,fontSize:11,color:"rgba(20,19,18,0.35)"}}>
+        Error: {error}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:0}}>
+
+      {/* Intelligence Digest */}
+      <HelmDigest />
+
+      {/* Tag filter bar */}
+      {allTags.length > 0 && (
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:20,alignItems:"center"}}>
+          <span style={{fontSize:11,letterSpacing:"0.10em",textTransform:"uppercase",
+            color:"rgba(20,19,18,0.40)",marginRight:4}}>Filter</span>
+          <button
+            onClick={() => setActiveTag(null)}
+            style={buttonStyle({
+              padding:"4px 10px",fontSize:11,
+              background: !activeTag ? "rgba(20,19,18,0.08)" : "transparent",
+              fontWeight: !activeTag ? 600 : 400,
+            })}>
+            All
+          </button>
+          {allTags.map(tag => (
+            <button
+              key={tag}
+              onClick={() => setActiveTag(t => t === tag ? null : tag)}
+              style={buttonStyle({
+                padding:"4px 10px",fontSize:11,
+                background: activeTag === tag ? "#0d0d1a" : "transparent",
+                color: activeTag === tag ? "#5a82ff" : "rgba(20,19,18,0.60)",
+                border: activeTag === tag ? "1px solid #5a82ff" : "1px solid rgba(20,19,18,0.12)",
+              })}>
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div style={{height:1,background:"rgba(20,19,18,0.07)",marginBottom:18}}/>
+
+      {/* Pillar buckets */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:16}}>
+        {HELM_PILLARS.map(pillar => {
+          const sigs = byPillar[pillar.key] || [];
+          return (
+            <div key={pillar.key} style={{
+              background: pillar.bg,
+              border:`1px solid ${pillar.color}22`,
+              borderRadius:16,
+              padding:"16px 18px",
+              display:"flex",flexDirection:"column",gap:10,
+            }}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:16,color:pillar.color}}>{pillar.icon}</span>
+                <span style={{fontSize:12,fontWeight:700,letterSpacing:"0.10em",
+                  textTransform:"uppercase",color:pillar.color}}>
+                  {pillar.label}
+                </span>
+                <span style={{marginLeft:"auto",fontSize:11,
+                  color:"rgba(20,19,18,0.35)",fontWeight:500}}>
+                  {sigs.length} signal{sigs.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+
+              <div style={{height:1,background:`${pillar.color}22`}}/>
+
+              {sigs.length === 0 ? (
+                <div style={{fontSize:12,color:"rgba(20,19,18,0.30)",
+                  padding:"12px 0",textAlign:"center",letterSpacing:"0.04em"}}>
+                  No signals yet
+                </div>
+              ) : (
+                sigs.map(s => (
+                  <div key={s.id} style={{
+                    background:"rgba(255,255,255,0.60)",
+                    borderRadius:10,
+                    padding:"10px 12px",
+                    border:"1px solid rgba(20,19,18,0.07)",
+                  }}>
+                    <div style={{fontSize:12,color:"rgba(20,19,18,0.72)",lineHeight:1.5,marginBottom:6}}>
+                      {s.signal}
+                    </div>
+                    {(s.tags || []).length > 0 && (
+                      <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                        {(s.tags || []).map(tag => (
+                          <button
+                            key={tag}
+                            onClick={() => setActiveTag(t => t === tag ? null : tag)}
+                            style={buttonStyle({
+                              padding:"2px 7px",fontSize:10,
+                              background: activeTag === tag ? "#0d0d1a" : "rgba(20,19,18,0.05)",
+                              color: activeTag === tag ? "#5a82ff" : "rgba(20,19,18,0.50)",
+                              border: activeTag === tag ? "1px solid #5a82ff" : "1px solid rgba(20,19,18,0.10)",
+                            })}>
+                            {tag}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{marginTop:6,fontSize:10,color:"rgba(20,19,18,0.28)",letterSpacing:"0.04em"}}>
+                      {new Date(s.timestamp).toLocaleDateString(undefined,
+                        {month:"short",day:"numeric",year:"numeric"})}
+                    </div>
+                  </div>
+                ))
+              )}
+
+              <div style={{
+                marginTop:4,
+                background:`${pillar.color}11`,
+                border:`1px dashed ${pillar.color}44`,
+                borderRadius:8,
+                padding:"8px 10px",
+                fontSize:11,
+                color:`${pillar.color}bb`,
+                lineHeight:1.5,
+                letterSpacing:"0.02em",
+              }}>
+                <span style={{fontWeight:700,marginRight:4}}>↗</span>
+                {pillar.insight}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{marginTop:20,borderTop:"1px solid rgba(20,19,18,0.08)",
+        paddingTop:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span style={{fontSize:11,color:"rgba(20,19,18,0.35)",letterSpacing:"0.06em"}}>
+          {signals.length} signal{signals.length !== 1 ? "s" : ""} captured total
+        </span>
+        <a href="http://localhost:7777" target="_blank" rel="noreferrer"
+          style={{fontSize:11,color:"#5a82ff",textDecoration:"none",letterSpacing:"0.06em"}}>
+          ⬡ Open Helm Capture →
+        </a>
       </div>
     </div>
   );
