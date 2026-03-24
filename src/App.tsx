@@ -1594,6 +1594,20 @@ function DayShell({ date, palette, travelTrips, events, onAddEvent, onEditEvent 
               });
             })()}
 
+            {/* Travel trip arcs — full-day arc in Travel ring */}
+            {tripsForDay.map(t => {
+              const rr = laneR[lanes.indexOf("Travel")];
+              const color = LANE_COLORS["Travel"];
+              return (
+                <g key={`trip-arc-${t.id}`} style={{pointerEvents:"none"}}>
+                  <path d={arcPath(rr, 0, 23.5)} fill="none" stroke={color}
+                    strokeWidth={14} strokeLinecap="round" strokeDasharray="12 6"
+                    style={{opacity:0.55}}/>
+                  <title>{t.title}</title>
+                </g>
+              );
+            })}
+
             {/* Event arcs */}
             {events.map(ev => {
               const li=lanes.indexOf(ev.lane);
@@ -1706,6 +1720,29 @@ function DayShell({ date, palette, travelTrips, events, onAddEvent, onEditEvent 
                       position:"absolute", top:0, bottom:0,
                       left:`${(i/(SWIM_END-SWIM_START))*100}%`,
                       width:1, background:palette.hairline, pointerEvents:"none"}}/>
+                  ))}
+
+                  {/* Travel trip bar — full-width block in Travel row */}
+                  {lane === "Travel" && tripsForDay.map(t => (
+                    <div key={`trip-bar-${t.id}`} style={{
+                      position:"absolute", inset:"6px 2px",
+                      borderRadius:6,
+                      background: LANE_COLORS["Travel"],
+                      opacity:0.18,
+                      pointerEvents:"none",
+                    }}/>
+                  ))}
+                  {lane === "Travel" && tripsForDay.map(t => (
+                    <div key={`trip-label-${t.id}`} style={{
+                      position:"absolute", top:0, bottom:0, left:6,
+                      display:"flex", alignItems:"center",
+                      pointerEvents:"none",
+                    }}>
+                      <span style={{fontSize:9, fontWeight:700, letterSpacing:"0.10em",
+                        color: LANE_COLORS["Travel"], textTransform:"uppercase", opacity:0.70}}>
+                        ✈ {t.title}
+                      </span>
+                    </div>
                   ))}
 
                   {/* Event bars */}
