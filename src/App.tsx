@@ -694,10 +694,7 @@ export default function App() {
   // Confirmed trips from Helm Capture /trips — parsed from real bookings + Gmail
   const [confirmedTrips, setConfirmedTrips] = useState<TravelTrip[]>([]);
   useEffect(() => {
-    if (!helmToken) return;
-    fetch("http://localhost:7777/trips", {
-      headers: { Authorization: `Bearer ${helmToken}` },
-    })
+    fetch("http://localhost:7777/trips")
       .then(r => r.ok ? r.json() : Promise.reject())
       .then((data: Array<{
         id: string; title: string; location: string;
@@ -717,7 +714,7 @@ export default function App() {
         })));
       })
       .catch(() => {}); // silent — PLANNED_TRIPS serve as fallback
-  }, [helmToken]);
+  }, []);
 
   // Merge: confirmed trips take precedence; planned trips fill any gaps
   const travelTrips: TravelTrip[] = useMemo(() => {
@@ -892,7 +889,7 @@ export default function App() {
         {/* Body */}
         <div style={{padding:22,flex:1,minHeight:0,overflowY:"auto"}}>
           {mode === "helm" ? (
-            <HelmView palette={palette} travelTrips={travelTrips} token={helmToken}/>
+            <HelmView palette={palette} travelTrips={travelTrips}/>
           ) : mode === "pods" ? (
             <PodsTimeline
               currentPodStartYear={2026} palette={palette} travelTrips={travelTrips}
@@ -1825,28 +1822,35 @@ const HELM_PILLARS: { key: string; label: string; icon: string; color: string; b
   },
 ];
 
+type PillarDigest = {
+  signal_count: number;
+  week_count: number;
+  suggestions: { action: string; generated_at: string; source: string }[];
+  top_tags: { tag: string; count: number }[];
+  cross_pillars: string[];
+};
 type HelmDigestData = {
   generated_at: string;
-  week_count: number;
-  total_count: number;
+  lookback_days: number;
+  capture_signals: number;
+  gmail_signals: number;
   active_pillars: string[];
   bridges: { tag: string; pillars: string[] }[];
-  top_tags: { tag: string; count: number }[];
-  suggestions: { pillar: string; action: string }[];
+  needs_review_count: number;
+  needs_review: { fetched: string; sender: string; subject: string }[];
+  pillars: Record<string, PillarDigest>;
 };
 
-function HelmDigest({ token }: { token: string }) {
+function HelmDigest() {
   const [digest, setDigest] = useState<HelmDigestData | null>(null);
   const [open, setOpen] = useState(true);
 
   useEffect(() => {
-    if (token === "") return; // wait for token before fetching
-    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
-    fetch("http://localhost:7777/digest", { headers })
+    fetch("http://localhost:7777/digest")
       .then(r => r.ok ? r.json() : Promise.reject())
       .then((d: HelmDigestData) => setDigest(d))
       .catch(() => setDigest(null));
-  }, [token]);
+  }, []);
 
   if (!digest) return null;
 
@@ -1854,6 +1858,16 @@ function HelmDigest({ token }: { token: string }) {
     Growth:"#4f6eb0", Travel:"#7c5cb5", Family:"#c07840",
     Photography:"#b84060", Finances:"#a08c2a",
   };
+
+  // Derive flat arrays from nested pillars structure
+  const suggestions = Object.entries(digest.pillars || {})
+    .flatMap(([pillar, pd]) => (pd.suggestions || []).map(s => ({ pillar, action: s.action })));
+  const top_tags = Object.values(digest.pillars || {})
+    .flatMap(pd => pd.top_tags || [])
+    .sort((a, b) => b.count - a.count).slice(0, 8);
+  const week_count = Object.values(digest.pillars || {})
+    .reduce((sum, pd) => sum + (pd.week_count || 0), 0);
+  const total_count = (digest.capture_signals || 0) + (digest.gmail_signals || 0);
 
   return (
     <div style={{
@@ -1880,7 +1894,7 @@ function HelmDigest({ token }: { token: string }) {
             fontSize:10, fontWeight:600, padding:"2px 8px", borderRadius:999,
             letterSpacing:"0.08em",
           }}>
-            {digest.week_count} this week
+            {week_count} this week
           </span>
         </div>
         <span style={{color:"rgba(232,230,224,0.40)", fontSize:11}}>{open ? "▲" : "▼"}</span>
@@ -1895,7 +1909,7 @@ function HelmDigest({ token }: { token: string }) {
             <div style={{fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase",
               color:"rgba(232,230,224,0.40)", marginBottom:10}}>Action Items</div>
             <div style={{display:"flex", flexDirection:"column", gap:8}}>
-              {digest.suggestions.map(s => (
+              {suggestions.map(s => (
                 <div key={s.pillar} style={{
                   display:"flex", gap:10, alignItems:"flex-start",
                   background:"rgba(255,255,255,0.04)", borderRadius:10, padding:"10px 12px",
@@ -1920,12 +1934,12 @@ function HelmDigest({ token }: { token: string }) {
           </div>
 
           {/* Cross-pillar bridges */}
-          {digest.bridges.length > 0 && (
+          {(digest.bridges || []).length > 0 && (
             <div>
               <div style={{fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase",
                 color:"rgba(232,230,224,0.40)", marginBottom:8}}>Cross-Pillar Bridges</div>
               <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
-                {digest.bridges.map(b => (
+                {(digest.bridges || []).map(b => (
                   <div key={b.tag} style={{
                     background:"rgba(90,130,255,0.10)", border:"1px solid rgba(90,130,255,0.25)",
                     borderRadius:999, padding:"4px 12px", display:"flex", alignItems:"center", gap:6,
@@ -1940,7 +1954,7 @@ function HelmDigest({ token }: { token: string }) {
             </div>
           )}
 
-          {digest.bridges.length === 0 && (
+          {(digest.bridges || []).length === 0 && (
             <div style={{fontSize:11, color:"rgba(232,230,224,0.30)", letterSpacing:"0.04em",
               fontStyle:"italic"}}>
               No cross-pillar bridges yet — capture signals across more pillars to unlock connections.
@@ -1948,12 +1962,12 @@ function HelmDigest({ token }: { token: string }) {
           )}
 
           {/* Top tags */}
-          {digest.top_tags.length > 0 && (
+          {top_tags.length > 0 && (
             <div>
               <div style={{fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase",
                 color:"rgba(232,230,224,0.40)", marginBottom:8}}>Momentum Tags</div>
               <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
-                {digest.top_tags.map(t => (
+                {top_tags.map(t => (
                   <div key={t.tag} style={{
                     background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.10)",
                     borderRadius:999, padding:"3px 10px", fontSize:11,
@@ -1971,7 +1985,7 @@ function HelmDigest({ token }: { token: string }) {
           <div style={{fontSize:10, color:"rgba(232,230,224,0.22)", letterSpacing:"0.04em",
             borderTop:"1px solid rgba(90,130,255,0.10)", paddingTop:10}}>
             Generated {new Date(digest.generated_at).toLocaleString(undefined,
-              {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})} · {digest.total_count} total signals
+              {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})} · {total_count} total signals
           </div>
         </div>
       )}
@@ -1979,22 +1993,15 @@ function HelmDigest({ token }: { token: string }) {
   );
 }
 
-function HelmView({ palette: _palette, travelTrips: _travelTrips, token }: { palette: Palette; travelTrips: TravelTrip[]; token: string }) {
+function HelmView({ palette: _palette, travelTrips: _travelTrips }: { palette: Palette; travelTrips: TravelTrip[] }) {
   const [signals, setSignals] = useState<HelmSignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTag, setActiveTag] = useState<string | null>(null);
 
   useEffect(() => {
-    // Don't attempt the first fetch until the token has been resolved.
-    // helmToken starts as "" and is populated async via Tauri invoke —
-    // firing without it would always 401 and leave a stale error on screen.
-    // The effect re-runs the moment the token arrives, so nothing is missed.
-    if (token === "") { setLoading(false); return; }
-
     setLoading(true);
-    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
-    fetch("http://localhost:7777/signals", { headers })
+    fetch("http://localhost:7777/signals")
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -2017,7 +2024,7 @@ function HelmView({ palette: _palette, travelTrips: _travelTrips, token }: { pal
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [token]);
+  }, []);
 
   const allTags = useMemo(() => {
     const s = new Set<string>();
@@ -2064,7 +2071,7 @@ function HelmView({ palette: _palette, travelTrips: _travelTrips, token }: { pal
     <div style={{display:"flex",flexDirection:"column",gap:0}}>
 
       {/* Intelligence Digest */}
-      <HelmDigest token={token} />
+      <HelmDigest />
 
       {/* Tag filter bar */}
       {allTags.length > 0 && (
