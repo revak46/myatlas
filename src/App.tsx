@@ -2006,13 +2006,20 @@ function HelmDigest() {
       .catch(() => setDigest(null));
   }, []);
 
-  const handleAction = (suggestion: string, pillar: string, action: "done" | "dismiss") => {
-    setActioned(prev => ({ ...prev, [suggestion]: action }));
-    fetch("http://localhost:7777/feedback", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ suggestion, pillar, action }),
-    }).catch(() => {});
+  const handleAction = (suggestion: string, pillar: string, action: "pin"|"unpin"|"on_it"|"not_relevant") => {
+    setActioned(prev => {
+      const next = { ...prev };
+      if (action === "unpin") delete next[suggestion];
+      else next[suggestion] = action === "on_it" && prev[suggestion] === "on_it" ? undefined as never : action;
+      return next;
+    });
+    if (action !== "unpin") {
+      fetch("http://localhost:7777/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ suggestion, pillar, action }),
+      }).catch(() => {});
+    }
   };
 
   if (!digest) return null;
@@ -2072,20 +2079,33 @@ function HelmDigest() {
             <div style={{fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase",
               color:"rgba(232,230,224,0.40)", marginBottom:10}}>Action Items</div>
             <div style={{display:"flex", flexDirection:"column", gap:8}}>
-              {suggestions.filter(s => actioned[s.action] !== "dismiss").map(s => {
-                const state = actioned[s.action];
+              {/* Pinned suggestions always float to top */}
+              {[
+                ...suggestions.filter(s => actioned[s.action] === "pin"),
+                ...suggestions.filter(s => !actioned[s.action]),
+                ...suggestions.filter(s => actioned[s.action] === "on_it"),
+              ].filter(s => actioned[s.action] !== "not_relevant").map(s => {
+                const state = actioned[s.action] as "pin"|"on_it"|"not_relevant"|undefined;
                 const pc = pillarColor[s.pillar] ?? "#5a82ff";
+                const isPinned = state === "pin";
+                const isOnIt   = state === "on_it";
                 return (
                   <div key={`${s.pillar}-${s.action}`} style={{
                     display:"flex", gap:10, alignItems:"flex-start",
-                    background: state === "done"
-                      ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)",
+                    background: isPinned
+                      ? `${pc}12`
+                      : isOnIt ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)",
                     borderRadius:10, padding:"10px 12px",
-                    border: state === "done"
-                      ? "1px solid rgba(255,255,255,0.03)" : "1px solid rgba(255,255,255,0.06)",
-                    opacity: state === "done" ? 0.45 : 1,
-                    transition:"opacity 0.2s",
+                    border: isPinned
+                      ? `1px solid ${pc}35`
+                      : isOnIt ? "1px solid rgba(255,255,255,0.03)" : "1px solid rgba(255,255,255,0.06)",
+                    opacity: isOnIt ? 0.40 : 1,
+                    transition:"all 0.25s",
                   }}>
+                    {/* Pin indicator */}
+                    {isPinned && (
+                      <span style={{fontSize:9, color:pc, flexShrink:0, marginTop:3}}>●</span>
+                    )}
                     <span style={{
                       fontSize:10, fontWeight:700, letterSpacing:"0.10em",
                       color: pc, background:`${pc}22`,
@@ -2095,35 +2115,44 @@ function HelmDigest() {
                       {s.pillar.toUpperCase()}
                     </span>
                     <span style={{
-                      flex:1, fontSize:12, color:"rgba(232,230,224,0.78)", lineHeight:1.5,
-                      textDecoration: state === "done" ? "line-through" : "none",
+                      flex:1, fontSize:12,
+                      color: isOnIt ? "rgba(232,230,224,0.40)" : "rgba(232,230,224,0.82)",
+                      lineHeight:1.5,
                     }}>
                       {s.action}
                     </span>
-                    {state !== "done" && (
-                      <div style={{display:"flex", gap:4, flexShrink:0, marginTop:1}}>
-                        <button
-                          onClick={() => handleAction(s.action, s.pillar, "done")}
-                          title="Mark done"
-                          style={{
-                            background:"rgba(80,200,120,0.12)", border:"1px solid rgba(80,200,120,0.30)",
-                            borderRadius:6, color:"rgba(80,200,120,0.90)", fontSize:11,
-                            cursor:"pointer", padding:"2px 7px", lineHeight:1,
-                          }}>✓</button>
-                        <button
-                          onClick={() => handleAction(s.action, s.pillar, "dismiss")}
-                          title="Dismiss"
-                          style={{
-                            background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.10)",
-                            borderRadius:6, color:"rgba(232,230,224,0.35)", fontSize:11,
-                            cursor:"pointer", padding:"2px 7px", lineHeight:1,
-                          }}>✕</button>
-                      </div>
-                    )}
-                    {state === "done" && (
-                      <span style={{fontSize:10, color:"rgba(80,200,120,0.60)",
-                        flexShrink:0, marginTop:2}}>done</span>
-                    )}
+                    {/* Reaction buttons — always visible, active state shows clearly */}
+                    <div style={{display:"flex", gap:3, flexShrink:0, marginTop:1}}>
+                      <button
+                        onClick={() => handleAction(s.action, s.pillar, isPinned ? "unpin" : "pin")}
+                        title={isPinned ? "Unpin" : "Keep this — important"}
+                        style={{
+                          background: isPinned ? `${pc}30` : "rgba(255,255,255,0.05)",
+                          border: isPinned ? `1px solid ${pc}60` : "1px solid rgba(255,255,255,0.10)",
+                          borderRadius:6, color: isPinned ? pc : "rgba(232,230,224,0.35)",
+                          fontSize:12, cursor:"pointer", padding:"2px 8px", lineHeight:1,
+                          fontWeight: isPinned ? 700 : 400,
+                        }}>+</button>
+                      <button
+                        onClick={() => handleAction(s.action, s.pillar, isOnIt ? "unpin" : "on_it")}
+                        title="On it"
+                        style={{
+                          background: isOnIt ? "rgba(80,200,120,0.12)" : "rgba(255,255,255,0.05)",
+                          border: isOnIt ? "1px solid rgba(80,200,120,0.35)" : "1px solid rgba(255,255,255,0.10)",
+                          borderRadius:6,
+                          color: isOnIt ? "rgba(80,200,120,0.80)" : "rgba(232,230,224,0.35)",
+                          fontSize:11, cursor:"pointer", padding:"2px 8px", lineHeight:1,
+                        }}>→</button>
+                      <button
+                        onClick={() => handleAction(s.action, s.pillar, "not_relevant")}
+                        title="Not relevant right now"
+                        style={{
+                          background:"rgba(255,255,255,0.05)",
+                          border:"1px solid rgba(255,255,255,0.08)",
+                          borderRadius:6, color:"rgba(232,230,224,0.20)",
+                          fontSize:11, cursor:"pointer", padding:"2px 8px", lineHeight:1,
+                        }}>✕</button>
+                    </div>
                   </div>
                 );
               })}
