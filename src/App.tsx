@@ -719,9 +719,23 @@ export default function App() {
   // Merge: confirmed trips take precedence; planned trips fill any gaps
   const travelTrips: TravelTrip[] = useMemo(() => {
     if (confirmedTrips.length === 0) return PLANNED_TRIPS;
+    // Merge confirmed trips with planned trips — preserve the most specific status from either source
+    const mergeStatus = (
+      confirmed: TravelTrip["status"],
+      planned: TravelTrip["status"]
+    ): TravelTrip["status"] => ({
+      flight:   confirmed.flight   !== "TBD" ? confirmed.flight   : planned.flight,
+      lodging:  confirmed.lodging  !== "TBD" ? confirmed.lodging  : planned.lodging,
+      transport: confirmed.transport !== "TBD" ? confirmed.transport : planned.transport,
+    });
+    const merged = confirmedTrips.map(ct => {
+      const planned = PLANNED_TRIPS.find(p => p.title.toLowerCase() === ct.title.toLowerCase());
+      if (!planned) return ct;
+      return { ...ct, status: mergeStatus(ct.status, planned.status), notes: ct.notes || planned.notes };
+    });
     const confirmedTitles = new Set(confirmedTrips.map(t => t.title.toLowerCase()));
     const extras = PLANNED_TRIPS.filter(p => !confirmedTitles.has(p.title.toLowerCase()));
-    return [...confirmedTrips, ...extras];
+    return [...merged, ...extras];
   }, [confirmedTrips, PLANNED_TRIPS]);
 
   const [events, setEvents] = useState<LifeEvent[]>(() =>
