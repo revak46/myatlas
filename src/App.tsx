@@ -1378,6 +1378,34 @@ function DayShell({ date, palette, travelTrips, events, onAddEvent, onEditEvent 
   onAddEvent: (hour?: number) => void; onEditEvent: (e: LifeEvent) => void;
 }) {
   const size=640, cx=320, cy=320, rOuter=270;
+
+  // Fetch Helm signals relevant to any active trip
+  const [tripSignals, setTripSignals] = useState<HelmSignal[]>([]);
+  const [signalsOpen, setSignalsOpen] = useState(false);
+  const tripsForDayEarly = useMemo(
+    () => travelTrips.filter(t => isDateInRange(date, t.start, t.end)),
+    [travelTrips, date]
+  );
+  useEffect(() => {
+    if (tripsForDayEarly.length === 0) { setTripSignals([]); return; }
+    const tripKeywords = tripsForDayEarly.flatMap(t =>
+      [t.title.toLowerCase(), t.location.split(",")[0].toLowerCase()]
+    );
+    const travelTags = new Set([
+      ...tripKeywords,
+      "travel","car rental","flight","lodging","hotel","trip planning",
+      "logistics","transportation","travel & flights",
+    ]);
+    fetch("http://localhost:7777/signals")
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then((sigs: HelmSignal[]) => {
+        const relevant = sigs.filter(s =>
+          (s.tags || []).some(tag => travelTags.has(tag.toLowerCase()))
+        ).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+        setTripSignals(relevant);
+      })
+      .catch(() => {});
+  }, [tripsForDayEarly]);
   const laneR = useMemo(() => [218,185,152,119,86,53], []);
   const laneThickness = 13;
   const lanes: EventLane[] = ["Work","Family","Health","Travel","Money","Creative"];
@@ -1802,25 +1830,99 @@ function DayShell({ date, palette, travelTrips, events, onAddEvent, onEditEvent 
             );
           })}
 
-          {/* Travel trip banner if applicable */}
+          {/* Travel trip panel — status + expandable Helm signals */}
           {tripsForDay.length > 0 && (
             <div style={{borderTop:`1px solid ${palette.hairline}`,
-              padding:"10px 14px", background:LANE_BG["Travel"],
-              display:"flex", gap:12, flexWrap:"wrap"}}>
-              {tripsForDay.map(t => (
-                <div key={t.id} style={{display:"flex",gap:10,alignItems:"center"}}>
-                  <div style={{width:6,height:6,borderRadius:999,
-                    background:LANE_COLORS["Travel"],flexShrink:0}}/>
-                  <span style={{fontSize:11,fontWeight:600,color:LANE_COLORS["Travel"]}}>
-                    {t.title}</span>
-                  <div style={{display:"flex",gap:6}}>
-                    <span style={{...chipStyle(),padding:"2px 7px",fontSize:10}}>
-                      Flight: {statusLabel(t.status.flight)}</span>
-                    <span style={{...chipStyle(),padding:"2px 7px",fontSize:10}}>
-                      Lodging: {statusLabel(t.status.lodging)}</span>
-                  </div>
+              background:LANE_BG["Travel"]}}>
+              {/* Trip header row */}
+              <div style={{padding:"10px 14px", display:"flex", gap:12,
+                flexWrap:"wrap", alignItems:"center", justifyContent:"space-between"}}>
+                <div style={{display:"flex", gap:12, flexWrap:"wrap"}}>
+                  {tripsForDay.map(t => (
+                    <div key={t.id} style={{display:"flex",gap:10,alignItems:"center"}}>
+                      <div style={{width:6,height:6,borderRadius:999,
+                        background:LANE_COLORS["Travel"],flexShrink:0}}/>
+                      <span style={{fontSize:11,fontWeight:600,color:LANE_COLORS["Travel"]}}>
+                        {t.title}</span>
+                      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                        <span style={{...chipStyle(),padding:"2px 7px",fontSize:10}}>
+                          ✈ Flight: {statusLabel(t.status.flight)}</span>
+                        <span style={{...chipStyle(),padding:"2px 7px",fontSize:10}}>
+                          🏨 Lodging: {statusLabel(t.status.lodging)}</span>
+                        <span style={{...chipStyle(),padding:"2px 7px",fontSize:10}}>
+                          🚗 Transport: {statusLabel(t.status.transport)}</span>
+                        <span style={{
+                          ...chipStyle(), padding:"2px 7px", fontSize:10,
+                          background:"rgba(184,64,96,0.10)",
+                          border:"1px solid rgba(184,64,96,0.25)",
+                          color:"#b84060", fontWeight:600,
+                        }}>
+                          📷 Camera</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+                {tripSignals.length > 0 && (
+                  <button onClick={() => setSignalsOpen(o => !o)} style={{
+                    background:"none", border:`1px solid ${LANE_COLORS["Travel"]}44`,
+                    borderRadius:999, padding:"3px 10px", fontSize:10, fontWeight:600,
+                    color:LANE_COLORS["Travel"], cursor:"pointer", letterSpacing:"0.06em",
+                    opacity:0.80,
+                  }}>
+                    {signalsOpen ? "▲ Hide" : `▼ ${tripSignals.length} signal${tripSignals.length>1?"s":""}`}
+                  </button>
+                )}
+              </div>
+
+              {/* Expanded signal cards */}
+              {signalsOpen && tripSignals.length > 0 && (
+                <div style={{padding:"0 14px 14px", display:"flex", flexDirection:"column", gap:8}}>
+                  {tripSignals.map(s => {
+                    const pillarColors: Record<string,string> = {
+                      Travel:"#7c5cb5", Growth:"#4f6eb0", Family:"#c07840",
+                      Photography:"#b84060", Finances:"#a08c2a",
+                    };
+                    const pc = pillarColors[s.pillar] ?? LANE_COLORS["Travel"];
+                    const date = new Date(s.timestamp).toLocaleDateString(undefined,
+                      {month:"short", day:"numeric"});
+                    return (
+                      <div key={s.id} style={{
+                        background:"rgba(255,255,255,0.55)",
+                        border:`1px solid ${palette.hairline}`,
+                        borderLeft:`3px solid ${pc}`,
+                        borderRadius:8, padding:"10px 12px",
+                        display:"flex", gap:10,
+                      }}>
+                        <div style={{flexShrink:0, paddingTop:1}}>
+                          <span style={{
+                            fontSize:9, fontWeight:700, letterSpacing:"0.10em",
+                            color:pc, background:`${pc}18`,
+                            padding:"2px 7px", borderRadius:999,
+                            border:`1px solid ${pc}33`,
+                          }}>{s.pillar.toUpperCase()}</span>
+                        </div>
+                        <div style={{flex:1, minWidth:0}}>
+                          <div style={{fontSize:11, color:"rgba(20,19,18,0.80)",
+                            lineHeight:1.5, marginBottom:6}}>
+                            {s.signal}
+                          </div>
+                          <div style={{display:"flex", gap:5, flexWrap:"wrap"}}>
+                            {(s.tags||[]).map(tag => (
+                              <span key={tag} style={{
+                                fontSize:9, color:"rgba(20,19,18,0.45)",
+                                background:"rgba(20,19,18,0.06)",
+                                padding:"1px 6px", borderRadius:999,
+                              }}>{tag}</span>
+                            ))}
+                            <span style={{fontSize:9, color:"rgba(20,19,18,0.30)",
+                              marginLeft:"auto"}}>{date}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1895,6 +1997,7 @@ type HelmDigestData = {
 function HelmDigest() {
   const [digest, setDigest] = useState<HelmDigestData | null>(null);
   const [open, setOpen] = useState(true);
+  const [actioned, setActioned] = useState<Record<string, "done" | "dismiss">>({});
 
   useEffect(() => {
     fetch("http://localhost:7777/digest")
@@ -1902,6 +2005,15 @@ function HelmDigest() {
       .then((d: HelmDigestData) => setDigest(d))
       .catch(() => setDigest(null));
   }, []);
+
+  const handleAction = (suggestion: string, pillar: string, action: "done" | "dismiss") => {
+    setActioned(prev => ({ ...prev, [suggestion]: action }));
+    fetch("http://localhost:7777/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ suggestion, pillar, action }),
+    }).catch(() => {});
+  };
 
   if (!digest) return null;
 
@@ -1960,27 +2072,61 @@ function HelmDigest() {
             <div style={{fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase",
               color:"rgba(232,230,224,0.40)", marginBottom:10}}>Action Items</div>
             <div style={{display:"flex", flexDirection:"column", gap:8}}>
-              {suggestions.map(s => (
-                <div key={s.pillar} style={{
-                  display:"flex", gap:10, alignItems:"flex-start",
-                  background:"rgba(255,255,255,0.04)", borderRadius:10, padding:"10px 12px",
-                  border:"1px solid rgba(255,255,255,0.06)",
-                }}>
-                  <span style={{
-                    fontSize:10, fontWeight:700, letterSpacing:"0.10em",
-                    color: pillarColor[s.pillar] ?? "#5a82ff",
-                    background: `${pillarColor[s.pillar] ?? "#5a82ff"}22`,
-                    padding:"2px 8px", borderRadius:999, whiteSpace:"nowrap", flexShrink:0,
-                    border: `1px solid ${pillarColor[s.pillar] ?? "#5a82ff"}44`,
-                    marginTop:1,
+              {suggestions.filter(s => actioned[s.action] !== "dismiss").map(s => {
+                const state = actioned[s.action];
+                const pc = pillarColor[s.pillar] ?? "#5a82ff";
+                return (
+                  <div key={`${s.pillar}-${s.action}`} style={{
+                    display:"flex", gap:10, alignItems:"flex-start",
+                    background: state === "done"
+                      ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)",
+                    borderRadius:10, padding:"10px 12px",
+                    border: state === "done"
+                      ? "1px solid rgba(255,255,255,0.03)" : "1px solid rgba(255,255,255,0.06)",
+                    opacity: state === "done" ? 0.45 : 1,
+                    transition:"opacity 0.2s",
                   }}>
-                    {s.pillar.toUpperCase()}
-                  </span>
-                  <span style={{fontSize:12, color:"rgba(232,230,224,0.78)", lineHeight:1.5}}>
-                    {s.action}
-                  </span>
-                </div>
-              ))}
+                    <span style={{
+                      fontSize:10, fontWeight:700, letterSpacing:"0.10em",
+                      color: pc, background:`${pc}22`,
+                      padding:"2px 8px", borderRadius:999, whiteSpace:"nowrap", flexShrink:0,
+                      border:`1px solid ${pc}44`, marginTop:1,
+                    }}>
+                      {s.pillar.toUpperCase()}
+                    </span>
+                    <span style={{
+                      flex:1, fontSize:12, color:"rgba(232,230,224,0.78)", lineHeight:1.5,
+                      textDecoration: state === "done" ? "line-through" : "none",
+                    }}>
+                      {s.action}
+                    </span>
+                    {state !== "done" && (
+                      <div style={{display:"flex", gap:4, flexShrink:0, marginTop:1}}>
+                        <button
+                          onClick={() => handleAction(s.action, s.pillar, "done")}
+                          title="Mark done"
+                          style={{
+                            background:"rgba(80,200,120,0.12)", border:"1px solid rgba(80,200,120,0.30)",
+                            borderRadius:6, color:"rgba(80,200,120,0.90)", fontSize:11,
+                            cursor:"pointer", padding:"2px 7px", lineHeight:1,
+                          }}>✓</button>
+                        <button
+                          onClick={() => handleAction(s.action, s.pillar, "dismiss")}
+                          title="Dismiss"
+                          style={{
+                            background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.10)",
+                            borderRadius:6, color:"rgba(232,230,224,0.35)", fontSize:11,
+                            cursor:"pointer", padding:"2px 7px", lineHeight:1,
+                          }}>✕</button>
+                      </div>
+                    )}
+                    {state === "done" && (
+                      <span style={{fontSize:10, color:"rgba(80,200,120,0.60)",
+                        flexShrink:0, marginTop:2}}>done</span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
