@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SQL Governance — Before &amp; After Atlan POC</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --navy:   #1e3a5f;
+      --blue:   #2d6a8f;
+      --teal:   #0e9aa7;
+      --atlan:  #6c47ff;
+      --atlan2: #9b7bff;
+      --slate:  #3d5a73;
+      --amber:  #d97706;
+      --red:    #b91c1c;
+      --green:  #15803d;
+      --bg:     #f0f4f8;
+      --card:   #ffffff;
+      --border: #dde4ed;
+      --text1:  #1a2332;
+      --text2:  #4a5e74;
+      --text3:  #8a9db5;
+      --shadow: 0 1px 4px rgba(30,58,95,0.08), 0 2px 12px rgba(30,58,95,0.06);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      color: var(--text1); font-size: 13px; line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ─────────────────────────── */
+    .header {
+      background: var(--navy); padding: 20px 32px 18px;
+      display: flex; align-items: flex-start; justify-content: space-between;
+    }
+    .header-left h1 { font-size: 20px; font-weight: 700; color: #fff; letter-spacing: 0.3px; }
+    .header-left p  { font-size: 12px; color: rgba(255,255,255,0.50); margin-top: 3px; }
+    .header-badges  { display: flex; gap: 8px; margin-top: 8px; }
+    .badge {
+      display: inline-block; font-size: 10px; font-weight: 700;
+      letter-spacing: 1px; padding: 3px 10px; border-radius: 3px; text-transform: uppercase;
+    }
+    .badge-poc    { background: rgba(217,119,6,0.25); border: 1px solid rgba(217,119,6,0.5); color: #fbbf24; }
+    .badge-atlan  { background: rgba(108,71,255,0.30); border: 1px solid rgba(108,71,255,0.6); color: #c4b5fd; }
+    .header-meta  { text-align: right; font-size: 11px; color: rgba(255,255,255,0.45); line-height: 1.9; }
+    .header-meta strong { color: rgba(255,255,255,0.75); font-weight: 600; }
+
+    /* ── Toggle ─────────────────────────── */
+    .toggle-bar {
+      background: var(--navy); border-top: 1px solid rgba(255,255,255,0.08);
+      display: flex; gap: 0; padding: 0 32px;
+    }
+    .toggle-btn {
+      padding: 12px 24px; font-size: 12px; font-weight: 600;
+      color: rgba(255,255,255,0.45); cursor: pointer; border: none;
+      background: transparent; letter-spacing: 0.5px; border-bottom: 3px solid transparent;
+      transition: all 0.2s;
+    }
+    .toggle-btn.active { color: #fff; border-bottom-color: var(--teal); }
+    .toggle-btn.active.atlan-tab { border-bottom-color: var(--atlan2); color: var(--atlan2); }
+
+    /* ── Layout ─────────────────────────── */
+    .main { padding: 24px 32px 40px; max-width: 1400px; margin: 0 auto; }
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .section { margin-bottom: 24px; }
+    .section-title {
+      font-size: 11px; font-weight: 700; letter-spacing: 1.2px;
+      text-transform: uppercase; color: var(--text2);
+      margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+    }
+    .section-title::after { content:''; flex:1; height:1px; background:var(--border); }
+    .section-title .atlan-pill {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
+      background: rgba(108,71,255,0.12); color: var(--atlan);
+      border: 1px solid rgba(108,71,255,0.25); padding: 1px 7px;
+      border-radius: 10px; text-transform: uppercase;
+    }
+
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 8px; box-shadow: var(--shadow); padding: 18px 20px;
+    }
+    .card-atlan { border-color: rgba(108,71,255,0.25); }
+
+    .grid-4  { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
+    .grid-2  { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .grid-3  { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    .grid-21 { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
+
+    /* ── KPI ─────────────────────────────── */
+    .kpi-card { padding: 18px 20px; }
+    .kpi-label { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text3); margin-bottom: 8px; }
+    .kpi-value { font-size: 34px; font-weight: 800; color: var(--navy); line-height: 1; letter-spacing: -1px; }
+    .kpi-value.red    { color: var(--red); }
+    .kpi-value.green  { color: var(--green); }
+    .kpi-value.atlan  { color: var(--atlan); }
+    .kpi-sub   { font-size: 11px; color: var(--text3); margin-top: 5px; }
+    .kpi-delta {
+      font-size: 11px; font-weight: 700; margin-top: 5px;
+      display: inline-flex; align-items: center; gap: 3px;
+    }
+    .delta-up   { color: var(--green); }
+    .delta-down { color: var(--red); }
+    .kpi-accent-teal   { border-top: 3px solid var(--teal); }
+    .kpi-accent-atlan  { border-top: 3px solid var(--atlan); }
+    .kpi-accent-green  { border-top: 3px solid var(--green); }
+    .kpi-accent-red    { border-top: 3px solid var(--red); }
+
+    /* ── Before/After Compare ───────────────── */
+    .compare-grid { display: grid; grid-template-columns: 1fr 20px 1fr; gap: 0; align-items: stretch; }
+    .compare-divider { display: flex; align-items: center; justify-content: center; color: var(--text3); font-size: 10px; font-weight: 700; }
+    .before-col { background: #fafafa; border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
+    .after-col  { background: #f5f3ff; border: 1px solid rgba(108,71,255,0.2); border-radius: 8px; padding: 16px 18px; }
+    .col-header {
+      font-size: 10px; font-weight: 700; letter-spacing: 1px;
+      text-transform: uppercase; margin-bottom: 12px; padding-bottom: 8px;
+      border-bottom: 1px solid;
+    }
+    .before-col .col-header { color: var(--text3); border-bottom-color: var(--border); }
+    .after-col  .col-header { color: var(--atlan); border-bottom-color: rgba(108,71,255,0.2); }
+
+    /* ── Progress ───────────────────────── */
+    .progress-row { margin-bottom: 11px; }
+    .progress-label { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .progress-label span:first-child { font-size: 12px; color: var(--text1); font-weight: 500; }
+    .progress-label span:last-child  { font-size: 12px; color: var(--text2); font-weight: 700; }
+    .progress-track { height: 8px; background: #edf2f7; border-radius: 4px; overflow: hidden; }
+    .progress-fill  { height: 100%; border-radius: 4px; transition: width 1s ease; }
+
+    /* ── RAG ────────────────────────────── */
+    .rag-card { padding: 14px 16px; border-radius: 6px; border: 1px solid transparent; }
+    .rag-red   { background: #fef2f2; border-color: #fecaca; }
+    .rag-amber { background: #fffbeb; border-color: #fde68a; }
+    .rag-green { background: #f0fdf4; border-color: #bbf7d0; }
+    .rag-atlan { background: #f5f3ff; border-color: rgba(108,71,255,0.25); }
+    .rag-label { font-size: 10px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: var(--text2); margin-bottom: 5px; }
+    .rag-value { font-size: 22px; font-weight: 800; line-height: 1; }
+    .rag-red   .rag-value { color: var(--red); }
+    .rag-amber .rag-value { color: var(--amber); }
+    .rag-green .rag-value { color: var(--green); }
+    .rag-atlan .rag-value { color: var(--atlan); }
+    .rag-sub { font-size: 11px; color: var(--text2); margin-top: 4px; }
+    .rag-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+    .dot-red   { background: var(--red); }
+    .dot-amber { background: var(--amber); }
+    .dot-green { background: var(--green); }
+    .dot-atlan { background: var(--atlan); }
+
+    /* ── Score ──────────────────────────── */
+    .score-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; text-align: center; }
+    .score-ring { width: 120px; height: 120px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; position: relative; }
+    .score-inner { width: 88px; height: 88px; border-radius: 50%; background: white; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .score-num   { font-size: 28px; font-weight: 800; line-height: 1; }
+    .score-denom { font-size: 11px; color: var(--text3); }
+    .score-label { font-size: 11px; font-weight: 700; color: var(--text2); letter-spacing: 0.5px; text-transform: uppercase; }
+    .score-desc  { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+    /* ── Chart note ─────────────────────── */
+    .chart-note {
+      font-size: 11px; color: var(--text2);
+      background: #f7f9fc; border-left: 3px solid var(--teal);
+      padding: 8px 12px; border-radius: 0 4px 4px 0; margin-top: 12px; line-height: 1.6;
+    }
+    .chart-note.atlan-note { background: #f5f3ff; border-left-color: var(--atlan); }
+
+    /* ── Lineage block ──────────────────── */
+    .lineage-flow {
+      display: flex; align-items: center; gap: 0;
+      background: #f5f3ff; border: 1px solid rgba(108,71,255,0.2);
+      border-radius: 8px; padding: 16px 20px; margin-top: 8px;
+    }
+    .lineage-node {
+      flex: 1; text-align: center; padding: 10px 8px;
+      background: white; border: 1px solid rgba(108,71,255,0.2);
+      border-radius: 6px;
+    }
+    .lineage-node .node-label { font-size: 10px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: var(--text3); margin-bottom: 4px; }
+    .lineage-node .node-name  { font-size: 12px; font-weight: 600; color: var(--navy); }
+    .lineage-node .node-sub   { font-size: 10px; color: var(--text3); margin-top: 2px; }
+    .lineage-arrow { font-size: 18px; color: var(--atlan); padding: 0 6px; flex-shrink: 0; }
+
+    /* ── Table ──────────────────────────── */
+    table { width: 100%; border-collapse: collapse; }
+    thead tr { border-bottom: 2px solid var(--border); }
+    thead th { font-size: 10px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: var(--text3); padding: 0 10px 8px; text-align: left; }
+    thead th:last-child { text-align: right; }
+    tbody tr { border-bottom: 1px solid #f0f3f7; }
+    tbody tr:hover { background: #f7f9fc; }
+    tbody td { padding: 7px 10px; font-size: 12px; color: var(--text1); }
+    tbody td:last-child { text-align: right; font-weight: 600; }
+    .tag {
+      display: inline-block; font-size: 9px; font-weight: 700;
+      padding: 1px 6px; border-radius: 3px; letter-spacing: 0.5px; text-transform: uppercase;
+    }
+    .tag-red   { background: #fee2e2; color: var(--red); }
+    .tag-green { background: #dcfce7; color: var(--green); }
+    .tag-atlan { background: #ede9fe; color: var(--atlan); }
+    .tag-amber { background: #fef3c7; color: var(--amber); }
+
+    /* ── DBA box ─────────────────────────── */
+    .dba-box { background: var(--navy); color: rgba(255,255,255,0.88); border-radius: 8px; padding: 22px 28px; border-left: 4px solid var(--teal); }
+    .dba-box h3 { font-size: 12px; font-weight: 700; color: var(--teal); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 10px; }
+    .dba-box p  { font-size: 13px; line-height: 1.7; color: rgba(255,255,255,0.80); }
+
+    .atlan-box { background: #2d1f6e; color: rgba(255,255,255,0.88); border-radius: 8px; padding: 22px 28px; border-left: 4px solid var(--atlan2); }
+    .atlan-box h3 { font-size: 12px; font-weight: 700; color: var(--atlan2); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 10px; }
+    .atlan-box p  { font-size: 13px; line-height: 1.7; color: rgba(255,255,255,0.80); }
+
+    /* ── Assumptions ─────────────────────── */
+    .assumptions { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 14px 18px; }
+    .assumptions h4 { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); margin-bottom: 8px; }
+    .assumptions ul { list-style: none; }
+    .assumptions li { font-size: 11px; color: #78350f; padding: 2px 0; }
+    .assumptions li::before { content: '·  '; color: var(--amber); font-weight: 700; }
+
+    .chart-title { font-size: 13px; font-weight: 600; color: var(--text1); margin-bottom: 3px; }
+    .chart-sub   { font-size: 11px; color: var(--text3); margin-bottom: 12px; }
+    .divider     { height: 1px; background: var(--border); margin: 10px 0 14px; }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-left">
+    <h1>SQL Governance Dashboard — Before &amp; After Atlan</h1>
+    <p>Atlan POC · SQL Server Layer · DBA Lead Scope · Comparative View</p>
+    <div class="header-badges">
+      <span class="badge badge-poc">Mock Data</span>
+      <span class="badge badge-atlan">Atlan POC — 90 Day Projection</span>
+    </div>
+  </div>
+  <div class="header-meta">
+    <strong>Environment</strong> · 35 SQL Server Instances<br>
+    <strong>Before</strong> · SQL catalog views only (Day 0)<br>
+    <strong>After</strong> · Post Atlan ingestion + enrichment (Day 90)<br>
+    <strong>Focus</strong> · Security · Compliance · Audit Readiness
+  </div>
+</div>
+
+<!-- Toggle -->
+<div class="toggle-bar">
+  <button class="toggle-btn active" onclick="switchView('before', this)">Before Atlan — Day 0</button>
+  <button class="toggle-btn atlan-tab" onclick="switchView('after', this)">After Atlan — Day 90</button>
+  <button class="toggle-btn" onclick="switchView('compare', this)">Side-by-Side Comparison</button>
+</div>
+
+<div class="main">
+
+  <!-- ════════════════════════════════════════════ BEFORE VIEW -->
+  <div class="view active" id="view-before">
+
+    <div class="section">
+      <div class="section-title">Governance State — Day 0 (SQL Metadata Only)</div>
+      <div class="grid-4">
+        <div class="card kpi-card kpi-accent-red">
+          <div class="kpi-label">Governance Score</div>
+          <div class="kpi-value red">18<span style="font-size:16px;color:var(--text3)">/100</span></div>
+          <div class="kpi-sub">Critical — no catalog in place</div>
+        </div>
+        <div class="card kpi-card kpi-accent-red">
+          <div class="kpi-label">Tables Documented</div>
+          <div class="kpi-value red">7%</div>
+          <div class="kpi-sub">3,409 of 48,700 tables</div>
+        </div>
+        <div class="card kpi-card kpi-accent-red">
+          <div class="kpi-label">Sensitive Data Tagged</div>
+          <div class="kpi-value red">8%</div>
+          <div class="kpi-sub">274 of 3,420 PII candidates</div>
+        </div>
+        <div class="card kpi-card kpi-accent-red">
+          <div class="kpi-label">Assets With Steward</div>
+          <div class="kpi-value red">32%</div>
+          <div class="kpi-sub">111 of 352 databases</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Risk Indicators — Day 0</div>
+      <div class="grid-3">
+        <div class="card">
+          <div class="chart-title">Sensitivity Classification</div>
+          <div class="chart-sub">3,420 potential PII columns identified via pattern scan</div>
+          <div style="height:180px; display:flex; align-items:center; justify-content:center;">
+            <canvas id="b-sensitiveDonut"></canvas>
+          </div>
+          <div class="chart-note">Pattern-matched only. No confirmed classifications. No policy applied. No enforcement possible.</div>
+        </div>
+        <div class="card">
+          <div class="chart-title">Documentation Coverage</div>
+          <div class="chart-sub">Metadata maturity across all SQL objects</div>
+          <div style="height:180px; display:flex; align-items:center; justify-content:center;">
+            <canvas id="b-docDonut"></canvas>
+          </div>
+          <div class="chart-note">93% of tables have no business description, owner, or classification in any system.</div>
+        </div>
+        <div class="card">
+          <div class="chart-title">Stewardship Coverage</div>
+          <div class="chart-sub">Databases with a named, accountable business steward</div>
+          <div style="height:180px; display:flex; align-items:center; justify-content:center;">
+            <canvas id="b-stewardDonut"></canvas>
+          </div>
+          <div class="chart-note">241 databases have no identified business owner. Audit readiness is near zero for these assets.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">What Is Not Visible Without Atlan</div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="chart-title">Lineage Visibility — Day 0</div>
+          <div class="chart-sub">Cross-system data lineage from SQL to downstream consumers</div>
+          <div style="background:#fef2f2; border:1px solid #fecaca; border-radius:8px; padding:24px; text-align:center; margin-top:8px;">
+            <div style="font-size:40px; margin-bottom:8px;">🔴</div>
+            <div style="font-size:16px; font-weight:700; color:var(--red); margin-bottom:6px;">Lineage Unavailable</div>
+            <div style="font-size:12px; color:#991b1b; line-height:1.6;">SQL metadata alone cannot reveal cross-system dependencies. ETL jobs, EDW transformations, ActiveBatch orchestration, and BI consumption paths are invisible from SQL system views.</div>
+          </div>
+          <div class="chart-note" style="margin-top:12px">Impact: When a source table changes, downstream breakage cannot be predicted or scoped from SQL alone.</div>
+        </div>
+        <div class="card">
+          <div class="chart-title">Governance Gaps Summary</div>
+          <div class="chart-sub">Critical items missing from current state</div>
+          <table style="margin-top:4px">
+            <thead><tr><th>Area</th><th>Gap</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td>Business glossary</td><td>Not exists</td><td><span class="tag tag-red">Missing</span></td></tr>
+              <tr><td>Confirmed PII classification</td><td>8% coverage</td><td><span class="tag tag-red">Critical</span></td></tr>
+              <tr><td>Cross-system lineage</td><td>0% visible</td><td><span class="tag tag-red">Missing</span></td></tr>
+              <tr><td>Stewardship workflow</td><td>Manual / email</td><td><span class="tag tag-red">Missing</span></td></tr>
+              <tr><td>Policy propagation</td><td>12% covered</td><td><span class="tag tag-red">Critical</span></td></tr>
+              <tr><td>Audit trail</td><td>SQL logs only</td><td><span class="tag tag-amber">Partial</span></td></tr>
+              <tr><td>Column-level access review</td><td>Manual SQL queries</td><td><span class="tag tag-amber">Partial</span></td></tr>
+              <tr><td>Data quality scoring</td><td>Not exists</td><td><span class="tag tag-red">Missing</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="dba-box">
+      <h3>DBA Lead — Day 0 Assessment</h3>
+      <p>The SQL estate contains well-defined structure but almost no self-describing business metadata. Sensitive data candidates exist across 3,420 columns — only 8% are formally tagged. 241 databases have no steward. Cross-system lineage is invisible from SQL alone. Manual governance at this scale is not operationally viable. The risk surface is real, measurable, and growing at 8.7% per quarter.</p>
+    </div>
+
+  </div><!-- /before -->
+
+
+  <!-- ════════════════════════════════════════════ AFTER VIEW -->
+  <div class="view" id="view-after">
+
+    <div class="section">
+      <div class="section-title">Governance State — Day 90 <span class="atlan-pill">Atlan Derived</span></div>
+      <div class="grid-4">
+        <div class="card kpi-card kpi-accent-atlan">
+          <div class="kpi-label">Governance Score</div>
+          <div class="kpi-value atlan">67<span style="font-size:16px;color:var(--text3)">/100</span></div>
+          <div class="kpi-delta delta-up">▲ +49 pts from Day 0</div>
+        </div>
+        <div class="card kpi-card kpi-accent-green">
+          <div class="kpi-label">Assets Catalogued</div>
+          <div class="kpi-value green">94%</div>
+          <div class="kpi-delta delta-up">▲ 45,778 assets ingested</div>
+        </div>
+        <div class="card kpi-card kpi-accent-green">
+          <div class="kpi-label">Sensitive Data Classified</div>
+          <div class="kpi-value green">71%</div>
+          <div class="kpi-delta delta-up">▲ from 8% at Day 0</div>
+        </div>
+        <div class="card kpi-card kpi-accent-green">
+          <div class="kpi-label">Assets With Steward</div>
+          <div class="kpi-value green">86%</div>
+          <div class="kpi-delta delta-up">▲ from 32% at Day 0</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Atlan-Derived Metrics — Day 90 <span class="atlan-pill">Atlan Derived</span></div>
+      <div class="grid-3">
+        <div class="card card-atlan">
+          <div class="chart-title">Sensitivity Classification</div>
+          <div class="chart-sub">Confirmed classifications from Atlan auto-tagger + steward review</div>
+          <div style="height:180px; display:flex; align-items:center; justify-content:center;">
+            <canvas id="a-sensitiveDonut"></canvas>
+          </div>
+          <div class="chart-note atlan-note"><strong>Atlan adds:</strong> Automated classification rules applied at ingestion. Stewards confirm or reject. Policy inheritance propagates to downstream assets automatically.</div>
+        </div>
+        <div class="card card-atlan">
+          <div class="chart-title">Documentation Coverage</div>
+          <div class="chart-sub">After Atlan auto-description + steward enrichment</div>
+          <div style="height:180px; display:flex; align-items:center; justify-content:center;">
+            <canvas id="a-docDonut"></canvas>
+          </div>
+          <div class="chart-note atlan-note"><strong>Atlan adds:</strong> AI-generated descriptions at ingestion. Stewards edit and approve. Business glossary terms linked to columns automatically.</div>
+        </div>
+        <div class="card card-atlan">
+          <div class="chart-title">Stewardship Coverage</div>
+          <div class="chart-sub">Databases with assigned, active business steward</div>
+          <div style="height:180px; display:flex; align-items:center; justify-content:center;">
+            <canvas id="a-stewardDonut"></canvas>
+          </div>
+          <div class="chart-note atlan-note"><strong>Atlan adds:</strong> Stewardship assignment workflow. Notifications, escalation, and accountability tracking built into the catalog.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Lineage — Now Visible <span class="atlan-pill">Atlan Derived</span></div>
+      <div class="card card-atlan">
+        <div class="chart-title">Cross-System Data Lineage</div>
+        <div class="chart-sub">SQL source → ETL transformation → EDW → BI consumption — previously invisible</div>
+        <div class="lineage-flow">
+          <div class="lineage-node">
+            <div class="node-label">SQL Source</div>
+            <div class="node-name">CRM_Prod</div>
+            <div class="node-sub">dbo.CustomerTransaction</div>
+          </div>
+          <div class="lineage-arrow">→</div>
+          <div class="lineage-node">
+            <div class="node-label">ETL / ActiveBatch</div>
+            <div class="node-name">SSIS Package</div>
+            <div class="node-sub">CRM_to_EDW_Daily.dtsx</div>
+          </div>
+          <div class="lineage-arrow">→</div>
+          <div class="lineage-node">
+            <div class="node-label">EDW</div>
+            <div class="node-name">FinanceDW</div>
+            <div class="node-sub">fact.CustomerActivity</div>
+          </div>
+          <div class="lineage-arrow">→</div>
+          <div class="lineage-node">
+            <div class="node-label">BI / Reporting</div>
+            <div class="node-name">Power BI</div>
+            <div class="node-sub">Executive Sales Report</div>
+          </div>
+          <div class="lineage-arrow">→</div>
+          <div class="lineage-node">
+            <div class="node-label">Consumer</div>
+            <div class="node-name">Finance Team</div>
+            <div class="node-sub">Director of Finance</div>
+          </div>
+        </div>
+        <div class="chart-note atlan-note" style="margin-top:14px"><strong>Impact:</strong> When a source column is flagged as sensitive, Atlan can trace all downstream assets consuming that column — BI reports, ETL outputs, EDW tables — and apply classification or alert stewards automatically. This was impossible from SQL metadata alone.</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Governance Improvements — Day 0 vs Day 90 <span class="atlan-pill">Atlan Derived</span></div>
+      <div class="grid-2">
+        <div class="card card-atlan">
+          <div class="chart-title">Key Metric Improvements</div>
+          <div class="chart-sub">Before and after Atlan catalog ingestion and enrichment</div>
+          <div style="margin-top:8px">
+            <div class="progress-row">
+              <div class="progress-label"><span>Governance Readiness Score</span><span style="color:var(--atlan)">67% <span style="color:var(--green); font-size:10px">▲ from 18%</span></span></div>
+              <div class="progress-track"><div class="progress-fill" style="width:67%; background:var(--atlan)"></div></div>
+            </div>
+            <div class="progress-row">
+              <div class="progress-label"><span>Assets Catalogued</span><span style="color:var(--atlan)">94% <span style="color:var(--green); font-size:10px">▲ from 0%</span></span></div>
+              <div class="progress-track"><div class="progress-fill" style="width:94%; background:var(--atlan)"></div></div>
+            </div>
+            <div class="progress-row">
+              <div class="progress-label"><span>Sensitive Data Classified</span><span style="color:var(--green)">71% <span style="color:var(--green); font-size:10px">▲ from 8%</span></span></div>
+              <div class="progress-track"><div class="progress-fill" style="width:71%; background:var(--green)"></div></div>
+            </div>
+            <div class="progress-row">
+              <div class="progress-label"><span>Documentation Coverage</span><span style="color:var(--green)">68% <span style="color:var(--green); font-size:10px">▲ from 7%</span></span></div>
+              <div class="progress-track"><div class="progress-fill" style="width:68%; background:var(--green)"></div></div>
+            </div>
+            <div class="progress-row">
+              <div class="progress-label"><span>Stewardship Assigned</span><span style="color:var(--green)">86% <span style="color:var(--green); font-size:10px">▲ from 32%</span></span></div>
+              <div class="progress-track"><div class="progress-fill" style="width:86%; background:var(--green)"></div></div>
+            </div>
+            <div class="progress-row">
+              <div class="progress-label"><span>Policy Coverage</span><span style="color:var(--green)">64% <span style="color:var(--green); font-size:10px">▲ from 12%</span></span></div>
+              <div class="progress-track"><div class="progress-fill" style="width:64%; background:var(--green)"></div></div>
+            </div>
+            <div class="progress-row">
+              <div class="progress-label"><span>Cross-System Lineage</span><span style="color:var(--green)">89% <span style="color:var(--green); font-size:10px">▲ from 0%</span></span></div>
+              <div class="progress-track"><div class="progress-fill" style="width:89%; background:var(--green)"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="card card-atlan">
+          <div class="chart-title">Governance Gaps — Resolved</div>
+          <div class="chart-sub">Day 0 gaps addressed after Atlan deployment</div>
+          <table>
+            <thead><tr><th>Area</th><th>Day 0</th><th>Day 90</th></tr></thead>
+            <tbody>
+              <tr><td>Business glossary</td><td><span class="tag tag-red">Missing</span></td><td><span class="tag tag-atlan">Active (1,240 terms)</span></td></tr>
+              <tr><td>PII classification</td><td><span class="tag tag-red">8%</span></td><td><span class="tag tag-green">71% confirmed</span></td></tr>
+              <tr><td>Cross-system lineage</td><td><span class="tag tag-red">0%</span></td><td><span class="tag tag-green">89% mapped</span></td></tr>
+              <tr><td>Stewardship workflow</td><td><span class="tag tag-red">Missing</span></td><td><span class="tag tag-green">Active (86% covered)</span></td></tr>
+              <tr><td>Policy propagation</td><td><span class="tag tag-red">12%</span></td><td><span class="tag tag-green">64% active</span></td></tr>
+              <tr><td>Audit trail</td><td><span class="tag tag-amber">SQL logs only</span></td><td><span class="tag tag-green">Catalog + SQL unified</span></td></tr>
+              <tr><td>Column access review</td><td><span class="tag tag-amber">Manual</span></td><td><span class="tag tag-green">Automated workflow</span></td></tr>
+              <tr><td>Data quality scoring</td><td><span class="tag tag-red">Missing</span></td><td><span class="tag tag-atlan">Active on 67% of assets</span></td></tr>
+            </tbody>
+          </table>
+          <div class="chart-note atlan-note" style="margin-top:12px">These are 90-day projections based on typical Atlan POC ingestion timelines for environments of this scale.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="atlan-box">
+      <h3>DBA Lead — Day 90 Assessment</h3>
+      <p>After 90 days of Atlan catalog ingestion and steward enrichment, the governance posture has shifted from reactive to managed. Sensitive data classification moved from 8% to 71%. Cross-system lineage — previously invisible — now covers 89% of flagged assets. Stewardship is assigned across 86% of databases. The governance readiness score improved from 18 to 67 out of 100. The remaining gaps represent the next phase backlog, not an unmanaged unknown. The SQL estate is now discoverable, classifiable, and audit-ready at scale.</p>
+    </div>
+
+  </div><!-- /after -->
+
+
+  <!-- ════════════════════════════════════════════ COMPARE VIEW -->
+  <div class="view" id="view-compare">
+
+    <div class="section">
+      <div class="section-title">Side-by-Side Comparison — Day 0 vs Day 90</div>
+
+      <!-- Scores -->
+      <div class="grid-2" style="margin-bottom:14px">
+        <div class="card">
+          <div style="display:flex; align-items:center; gap:16px;">
+            <div class="score-wrap" style="padding:12px;">
+              <div class="score-ring" style="background: conic-gradient(var(--red) 18%, #f1f5f9 0%);">
+                <div class="score-inner">
+                  <div class="score-num" style="color:var(--red)">18</div>
+                  <div class="score-denom">/100</div>
+                </div>
+              </div>
+              <div class="score-label">Before Atlan</div>
+              <div class="score-desc">Day 0 — Critical</div>
+            </div>
+            <div style="flex:1">
+              <div style="font-size:11px; font-weight:700; color:var(--text3); letter-spacing:0.8px; text-transform:uppercase; margin-bottom:10px;">Key Gaps</div>
+              <div style="font-size:12px; color:var(--text2); line-height:2;">
+                ✗ No business glossary<br>
+                ✗ 93% tables undocumented<br>
+                ✗ Lineage invisible<br>
+                ✗ 241 DBs without steward<br>
+                ✗ Only 8% PII confirmed
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card card-atlan">
+          <div style="display:flex; align-items:center; gap:16px;">
+            <div class="score-wrap" style="padding:12px;">
+              <div class="score-ring" style="background: conic-gradient(var(--atlan) 67%, #f1f5f9 0%);">
+                <div class="score-inner">
+                  <div class="score-num" style="color:var(--atlan)">67</div>
+                  <div class="score-denom">/100</div>
+                </div>
+              </div>
+              <div class="score-label">After Atlan</div>
+              <div class="score-desc">Day 90 — Managed</div>
+            </div>
+            <div style="flex:1">
+              <div style="font-size:11px; font-weight:700; color:var(--atlan); letter-spacing:0.8px; text-transform:uppercase; margin-bottom:10px;">Resolved</div>
+              <div style="font-size:12px; color:var(--text2); line-height:2;">
+                ✓ 1,240 glossary terms active<br>
+                ✓ 68% tables documented<br>
+                ✓ 89% lineage mapped<br>
+                ✓ 86% databases stewarded<br>
+                ✓ 71% PII confirmed + tagged
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Metric comparison chart -->
+      <div class="card" style="margin-bottom:14px">
+        <div class="chart-title">All Governance Metrics — Before vs After</div>
+        <div class="chart-sub">Percentage improvement across all tracked governance dimensions</div>
+        <div style="height:280px">
+          <canvas id="compareBar"></canvas>
+        </div>
+      </div>
+
+      <!-- Gap table -->
+      <div class="card">
+        <div class="chart-title">Full Metric Comparison Table</div>
+        <div class="chart-sub">Day 0 (SQL only) vs Day 90 (post Atlan) — mock POC projections</div>
+        <table style="margin-top:8px">
+          <thead>
+            <tr>
+              <th>Governance Metric</th>
+              <th>Day 0 — Before</th>
+              <th>Day 90 — After</th>
+              <th>Delta</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Governance Readiness Score</td><td style="color:var(--red);font-weight:700">18/100</td><td style="color:var(--atlan);font-weight:700">67/100</td><td><span class="tag tag-green">+49 pts</span></td><td><span class="tag tag-atlan">Atlan composite</span></td></tr>
+            <tr><td>Assets catalogued</td><td style="color:var(--red)">0%</td><td style="color:var(--green)">94%</td><td><span class="tag tag-green">+94%</span></td><td><span class="tag tag-atlan">Atlan ingestion</span></td></tr>
+            <tr><td>Tables documented</td><td style="color:var(--red)">7%</td><td style="color:var(--green)">68%</td><td><span class="tag tag-green">+61%</span></td><td><span class="tag tag-atlan">Atlan + stewards</span></td></tr>
+            <tr><td>PII columns classified</td><td style="color:var(--red)">8%</td><td style="color:var(--green)">71%</td><td><span class="tag tag-green">+63%</span></td><td><span class="tag tag-atlan">Atlan auto-tagger</span></td></tr>
+            <tr><td>Stewardship coverage</td><td style="color:var(--red)">32%</td><td style="color:var(--green)">86%</td><td><span class="tag tag-green">+54%</span></td><td><span class="tag tag-atlan">Atlan workflow</span></td></tr>
+            <tr><td>Policy coverage</td><td style="color:var(--red)">12%</td><td style="color:var(--green)">64%</td><td><span class="tag tag-green">+52%</span></td><td><span class="tag tag-atlan">Atlan policies</span></td></tr>
+            <tr><td>Cross-system lineage</td><td style="color:var(--red)">0%</td><td style="color:var(--green)">89%</td><td><span class="tag tag-green">+89%</span></td><td><span class="tag tag-atlan">Atlan lineage</span></td></tr>
+            <tr><td>Business glossary terms</td><td style="color:var(--red)">0</td><td style="color:var(--green)">1,240</td><td><span class="tag tag-green">+1,240</span></td><td><span class="tag tag-atlan">Atlan glossary</span></td></tr>
+            <tr><td>Data quality scores active</td><td style="color:var(--red)">0%</td><td style="color:var(--atlan)">67%</td><td><span class="tag tag-green">+67%</span></td><td><span class="tag tag-atlan">Atlan DQ rules</span></td></tr>
+            <tr><td>SQL estate size (unchanged)</td><td>352 DBs / 48.7K tables</td><td>352 DBs / 48.7K tables</td><td>—</td><td><span class="tag tag-amber">SQL native</span></td></tr>
+            <tr><td>Total footprint (unchanged)</td><td>38.4 TB</td><td>38.4 TB</td><td>—</td><td><span class="tag tag-amber">SQL native</span></td></tr>
+          </tbody>
+        </table>
+        <div class="assumptions" style="margin-top:14px">
+          <h4>POC Assumptions — Day 90 Projections</h4>
+          <ul>
+            <li>All "After Atlan" figures are 90-day POC projections based on mock data — not guaranteed outcomes</li>
+            <li>Asset cataloguing assumes full SQL Server connector ingestion across all 35 instances</li>
+            <li>Classification improvements assume Atlan auto-tagger + 2 rounds of steward review</li>
+            <li>Lineage requires Atlan connectors for SSIS, ActiveBatch, and Power BI in addition to SQL Server</li>
+            <li>Stewardship coverage assumes governance programme runs alongside technical POC</li>
+            <li>Governance score is a composite mock index — not an official Atlan metric</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /compare -->
+
+</div><!-- /main -->
+
+<script>
+Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif";
+Chart.defaults.font.size   = 11;
+Chart.defaults.color       = '#4a5e74';
+
+/* ── Toggle views ─────────────────────── */
+function switchView(id, btn) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('view-' + id).classList.add('active');
+  btn.classList.add('active');
+}
+
+/* ── Before donuts ────────────────────── */
+new Chart(document.getElementById('b-sensitiveDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Confirmed (8%)','Pattern-match only (63%)','Unscanned (29%)'],
+    datasets: [{ data:[8,63,29], backgroundColor:['#15803d','#fbbf24','#e5e7eb'], borderWidth:2, borderColor:'#fff' }]
+  },
+  options: { responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{ position:'bottom', labels:{ boxWidth:10, padding:8, font:{size:10} } } } }
+});
+new Chart(document.getElementById('b-docDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Documented (7%)','Undocumented (93%)'],
+    datasets: [{ data:[7,93], backgroundColor:['#15803d','#fee2e2'], borderWidth:2, borderColor:'#fff' }]
+  },
+  options: { responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{ position:'bottom', labels:{ boxWidth:10, padding:8, font:{size:10} } } } }
+});
+new Chart(document.getElementById('b-stewardDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Has Steward (32%)','No Steward (68%)'],
+    datasets: [{ data:[32,68], backgroundColor:['#15803d','#fee2e2'], borderWidth:2, borderColor:'#fff' }]
+  },
+  options: { responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{ position:'bottom', labels:{ boxWidth:10, padding:8, font:{size:10} } } } }
+});
+
+/* ── After donuts ─────────────────────── */
+new Chart(document.getElementById('a-sensitiveDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Confirmed + Policy Applied (71%)','Pending Review (18%)','Unclassified (11%)'],
+    datasets: [{ data:[71,18,11], backgroundColor:['#6c47ff','#a78bfa','#e5e7eb'], borderWidth:2, borderColor:'#fff' }]
+  },
+  options: { responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{ position:'bottom', labels:{ boxWidth:10, padding:8, font:{size:10} } } } }
+});
+new Chart(document.getElementById('a-docDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Documented (68%)','In Progress (14%)','Undocumented (18%)'],
+    datasets: [{ data:[68,14,18], backgroundColor:['#6c47ff','#a78bfa','#e5e7eb'], borderWidth:2, borderColor:'#fff' }]
+  },
+  options: { responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{ position:'bottom', labels:{ boxWidth:10, padding:8, font:{size:10} } } } }
+});
+new Chart(document.getElementById('a-stewardDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Has Steward (86%)','No Steward (14%)'],
+    datasets: [{ data:[86,14], backgroundColor:['#6c47ff','#e5e7eb'], borderWidth:2, borderColor:'#fff' }]
+  },
+  options: { responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{ position:'bottom', labels:{ boxWidth:10, padding:8, font:{size:10} } } } }
+});
+
+/* ── Compare bar ──────────────────────── */
+new Chart(document.getElementById('compareBar'), {
+  type: 'bar',
+  data: {
+    labels: ['Governance Score','Assets Catalogued','PII Classified','Tables Documented','Stewardship','Policy Coverage','Cross-System Lineage','Data Quality Active'],
+    datasets: [
+      { label:'Day 0 — Before Atlan', data:[18,0,8,7,32,12,0,0], backgroundColor:'rgba(185,28,28,0.7)', borderRadius:4 },
+      { label:'Day 90 — After Atlan', data:[67,94,71,68,86,64,89,67], backgroundColor:'rgba(108,71,255,0.8)', borderRadius:4 },
+    ]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{ position:'top', labels:{ boxWidth:12, padding:14 } } },
+    scales:{
+      x:{ grid:{ display:false } },
+      y:{ max:100, grid:{ color:'#edf2f7' }, ticks:{ callback: v => v+'%' } }
+    }
+  }
+});
+</script>
+</body>
+</html>

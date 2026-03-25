@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SQL Governance Dashboard — Atlan POC</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --navy:    #1e3a5f;
+      --blue:    #2d6a8f;
+      --teal:    #0e9aa7;
+      --slate:   #3d5a73;
+      --amber:   #d97706;
+      --red:     #b91c1c;
+      --green:   #15803d;
+      --bg:      #f0f4f8;
+      --card:    #ffffff;
+      --border:  #dde4ed;
+      --text1:   #1a2332;
+      --text2:   #4a5e74;
+      --text3:   #8a9db5;
+      --shadow:  0 1px 4px rgba(30,58,95,0.08), 0 2px 12px rgba(30,58,95,0.06);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      color: var(--text1);
+      font-size: 13px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ─────────────────────────────── */
+    .header {
+      background: var(--navy);
+      padding: 20px 32px 18px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+    .header-left h1 {
+      font-size: 20px; font-weight: 700; color: #fff; letter-spacing: 0.3px;
+    }
+    .header-left p {
+      font-size: 12px; color: rgba(255,255,255,0.55); margin-top: 3px; letter-spacing: 0.3px;
+    }
+    .header-meta {
+      text-align: right; font-size: 11px; color: rgba(255,255,255,0.45);
+      line-height: 1.8;
+    }
+    .header-meta strong { color: rgba(255,255,255,0.75); font-weight: 600; }
+    .poc-badge {
+      display: inline-block; background: rgba(217,119,6,0.25); border: 1px solid rgba(217,119,6,0.5);
+      color: #fbbf24; font-size: 10px; font-weight: 700; letter-spacing: 1px;
+      padding: 2px 8px; border-radius: 3px; margin-top: 6px; text-transform: uppercase;
+    }
+
+    /* ── Layout ─────────────────────────────── */
+    .main { padding: 24px 32px 40px; max-width: 1400px; margin: 0 auto; }
+    .section { margin-bottom: 24px; }
+    .section-title {
+      font-size: 11px; font-weight: 700; letter-spacing: 1.2px;
+      text-transform: uppercase; color: var(--text2);
+      margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+    }
+    .section-title::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 8px; box-shadow: var(--shadow);
+      padding: 18px 20px;
+    }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    .grid-21 { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
+    .grid-12 { display: grid; grid-template-columns: 1fr 2fr; gap: 14px; }
+
+    /* ── KPI Cards ──────────────────────────── */
+    .kpi-card { padding: 20px 22px; }
+    .kpi-label {
+      font-size: 10px; font-weight: 700; letter-spacing: 1px;
+      text-transform: uppercase; color: var(--text3); margin-bottom: 8px;
+    }
+    .kpi-value {
+      font-size: 36px; font-weight: 700; color: var(--navy);
+      line-height: 1; letter-spacing: -1px;
+    }
+    .kpi-value span { font-size: 16px; font-weight: 500; color: var(--text2); letter-spacing: 0; }
+    .kpi-sub { font-size: 11px; color: var(--text3); margin-top: 6px; }
+    .kpi-accent { border-top: 3px solid var(--teal); }
+
+    /* ── Chart wrappers ─────────────────────── */
+    .chart-title {
+      font-size: 13px; font-weight: 600; color: var(--text1); margin-bottom: 4px;
+    }
+    .chart-sub {
+      font-size: 11px; color: var(--text3); margin-bottom: 14px;
+    }
+    .chart-wrap { position: relative; }
+    .chart-note {
+      font-size: 11px; color: var(--text2);
+      background: #f7f9fc; border-left: 3px solid var(--teal);
+      padding: 8px 12px; border-radius: 0 4px 4px 0; margin-top: 14px;
+      line-height: 1.6;
+    }
+
+    /* ── Table ──────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; }
+    thead tr { border-bottom: 2px solid var(--border); }
+    thead th {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.8px;
+      text-transform: uppercase; color: var(--text3);
+      padding: 0 10px 8px; text-align: left;
+    }
+    thead th:last-child { text-align: right; }
+    tbody tr { border-bottom: 1px solid #f0f3f7; }
+    tbody tr:hover { background: #f7f9fc; }
+    tbody td { padding: 8px 10px; font-size: 12px; color: var(--text1); }
+    tbody td:last-child { text-align: right; font-weight: 600; color: var(--navy); }
+    .rank { color: var(--text3); font-size: 11px; font-weight: 600; }
+    .db-name { font-weight: 600; color: var(--navy); }
+    .schema-tag {
+      display: inline-block; background: #edf2f7; color: var(--slate);
+      font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 3px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+
+    /* ── Progress bar ───────────────────────── */
+    .progress-row { margin-bottom: 12px; }
+    .progress-label {
+      display: flex; justify-content: space-between; margin-bottom: 4px;
+    }
+    .progress-label span:first-child { font-size: 12px; color: var(--text1); font-weight: 500; }
+    .progress-label span:last-child { font-size: 12px; color: var(--text2); font-weight: 600; }
+    .progress-track {
+      height: 7px; background: #edf2f7; border-radius: 4px; overflow: hidden;
+    }
+    .progress-fill { height: 100%; border-radius: 4px; }
+
+    /* ── RAG indicators ─────────────────────── */
+    .rag-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .rag-card {
+      padding: 14px 16px; border-radius: 6px; border: 1px solid transparent;
+    }
+    .rag-red { background: #fef2f2; border-color: #fecaca; }
+    .rag-amber { background: #fffbeb; border-color: #fde68a; }
+    .rag-green { background: #f0fdf4; border-color: #bbf7d0; }
+    .rag-label { font-size: 10px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: var(--text2); margin-bottom: 6px; }
+    .rag-value { font-size: 22px; font-weight: 700; line-height: 1; }
+    .rag-red .rag-value   { color: var(--red); }
+    .rag-amber .rag-value { color: var(--amber); }
+    .rag-green .rag-value { color: var(--green); }
+    .rag-sub { font-size: 11px; color: var(--text2); margin-top: 4px; }
+    .rag-indicator {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      margin-right: 5px; vertical-align: middle;
+    }
+    .dot-red   { background: var(--red); }
+    .dot-amber { background: var(--amber); }
+    .dot-green { background: var(--green); }
+
+    /* ── Score card ─────────────────────────── */
+    .score-wrap {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; padding: 20px; text-align: center;
+    }
+    .score-circle {
+      width: 110px; height: 110px; border-radius: 50%;
+      background: conic-gradient(var(--red) 18%, #f1f5f9 0%);
+      display: flex; align-items: center; justify-content: center;
+      position: relative; margin-bottom: 10px;
+    }
+    .score-inner {
+      width: 82px; height: 82px; border-radius: 50%;
+      background: white; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+    }
+    .score-num { font-size: 26px; font-weight: 800; color: var(--red); line-height: 1; }
+    .score-denom { font-size: 11px; color: var(--text3); }
+    .score-label { font-size: 11px; font-weight: 700; color: var(--text2); letter-spacing: 0.5px; text-transform: uppercase; }
+    .score-desc { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+    /* ── DBA Box ────────────────────────────── */
+    .dba-box {
+      background: var(--navy); color: rgba(255,255,255,0.88);
+      border-radius: 8px; padding: 22px 28px;
+      border-left: 4px solid var(--teal);
+    }
+    .dba-box h3 { font-size: 12px; font-weight: 700; color: var(--teal); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 10px; }
+    .dba-box p { font-size: 13px; line-height: 1.7; color: rgba(255,255,255,0.80); }
+
+    /* ── Assumptions ────────────────────────── */
+    .assumptions {
+      background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;
+      padding: 14px 18px;
+    }
+    .assumptions h4 { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); margin-bottom: 8px; }
+    .assumptions ul { list-style: none; }
+    .assumptions li { font-size: 11px; color: #78350f; padding: 2px 0; }
+    .assumptions li::before { content: '·  '; color: var(--amber); font-weight: 700; }
+
+    /* ── Permission table ───────────────────── */
+    .perm-bar {
+      display: inline-block; height: 8px; border-radius: 4px;
+      background: var(--blue); vertical-align: middle; margin-right: 6px;
+    }
+
+    /* ── Divider ────────────────────────────── */
+    .divider { height: 1px; background: var(--border); margin: 8px 0 16px; }
+
+    @media (max-width: 900px) {
+      .grid-4 { grid-template-columns: repeat(2, 1fr); }
+      .grid-2, .grid-21, .grid-12, .grid-3 { grid-template-columns: 1fr; }
+      .rag-grid { grid-template-columns: 1fr 1fr; }
+      .main { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════ HEADER -->
+<div class="header">
+  <div class="header-left">
+    <h1>SQL Server Governance Dashboard</h1>
+    <p>Atlan POC — SQL Server Layer · DBA Lead Scope</p>
+    <div class="poc-badge">Mock Data — POC Evaluation</div>
+  </div>
+  <div class="header-meta">
+    <strong>Environment</strong> · 35 SQL Server Instances<br>
+    <strong>Scope</strong> · SQL Layer Only (ETL / EDW separate)<br>
+    <strong>Focus</strong> · Security · Compliance · Audit Readiness<br>
+    <strong>As of</strong> · Q1 2026
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- ═══ SECTION 1: SQL ESTATE SIZE ══════════════════════ -->
+  <div class="section">
+    <div class="section-title">1 — SQL Estate Size</div>
+    <div class="grid-4">
+      <div class="card kpi-card kpi-accent">
+        <div class="kpi-label">SQL Instances</div>
+        <div class="kpi-value">35</div>
+        <div class="kpi-sub">Across all environments</div>
+      </div>
+      <div class="card kpi-card kpi-accent">
+        <div class="kpi-label">Databases</div>
+        <div class="kpi-value">352</div>
+        <div class="kpi-sub">Avg 10 per instance</div>
+      </div>
+      <div class="card kpi-card kpi-accent">
+        <div class="kpi-label">Est. Tables</div>
+        <div class="kpi-value">48<span>K+</span></div>
+        <div class="kpi-sub">~138 avg per database</div>
+      </div>
+      <div class="card kpi-card kpi-accent">
+        <div class="kpi-label">Est. Columns</div>
+        <div class="kpi-value">1.1<span>M+</span></div>
+        <div class="kpi-sub">~23 avg per table</div>
+      </div>
+    </div>
+    <div class="chart-note" style="margin-top:12px">
+      <strong>Why it matters:</strong> At 1.1M+ columns across 352 databases, manual metadata governance is operationally impossible. This is the baseline argument for a catalog platform.
+    </div>
+  </div>
+
+  <!-- ═══ SECTION 2: LARGEST DATA ASSETS ══════════════════ -->
+  <div class="section">
+    <div class="section-title">2 — Largest Data Assets</div>
+    <div class="grid-21">
+      <div class="card">
+        <div class="chart-title">Top 10 Databases by Size</div>
+        <div class="chart-sub">Governance risk concentrates in the largest assets</div>
+        <div class="chart-wrap" style="height:260px">
+          <canvas id="dbSizeChart"></canvas>
+        </div>
+        <div class="chart-note">Large databases often correspond to the highest compliance, audit, and sensitivity exposure — and are frequently vendor-managed with poor internal documentation.</div>
+      </div>
+      <div class="card">
+        <div class="chart-title">Top 10 Tables by Row Count</div>
+        <div class="chart-sub">High-volume objects most likely to contain sensitive history</div>
+        <table>
+          <thead><tr><th>#</th><th>Table</th><th>Rows</th></tr></thead>
+          <tbody>
+            <tr><td class="rank">01</td><td><span class="schema-tag">dbo</span> CustomerTransactionHistory</td><td>2.1B</td></tr>
+            <tr><td class="rank">02</td><td><span class="schema-tag">dbo</span> CRM_ActivityLog</td><td>1.8B</td></tr>
+            <tr><td class="rank">03</td><td><span class="schema-tag">dbo</span> OrderLineArchive</td><td>892M</td></tr>
+            <tr><td class="rank">04</td><td><span class="schema-tag">dbo</span> PatientEncounterDetail</td><td>445M</td></tr>
+            <tr><td class="rank">05</td><td><span class="schema-tag">dbo</span> FinancialLedgerEntry</td><td>312M</td></tr>
+            <tr><td class="rank">06</td><td><span class="schema-tag">dbo</span> AuditEventLog</td><td>287M</td></tr>
+            <tr><td class="rank">07</td><td><span class="schema-tag">dbo</span> ProductCatalogHistory</td><td>198M</td></tr>
+            <tr><td class="rank">08</td><td><span class="schema-tag">dbo</span> UserSessionLog</td><td>176M</td></tr>
+            <tr><td class="rank">09</td><td><span class="schema-tag">dbo</span> VendorInvoiceLine</td><td>142M</td></tr>
+            <tr><td class="rank">10</td><td><span class="schema-tag">dbo</span> PayrollTransactionDetail</td><td>98M</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ SECTION 3 + 4: SENSITIVE DATA + PERMISSIONS ═════ -->
+  <div class="section">
+    <div class="section-title">3 — Potential Sensitive Data Footprint</div>
+    <div class="grid-12">
+      <div class="card">
+        <div class="chart-title">Potential PII-like Columns</div>
+        <div class="chart-sub">First-pass metadata pattern scan — not confirmed classification</div>
+        <div style="text-align:center; padding: 8px 0 4px;">
+          <div style="font-size:42px; font-weight:800; color:var(--red); letter-spacing:-1px; line-height:1">3,420</div>
+          <div style="font-size:11px; color:var(--text3); margin-top:4px">columns matching sensitive data patterns</div>
+        </div>
+        <div class="divider"></div>
+        <div class="chart-wrap" style="height:200px; display:flex; align-items:center; justify-content:center;">
+          <canvas id="sensitiveDonut"></canvas>
+        </div>
+        <div class="chart-note">
+          <strong>Important:</strong> This is not confirmed classification — it is potential discovery surface from SQL column name pattern matching. Actual classification requires catalog tooling.
+        </div>
+      </div>
+      <div class="card">
+        <div class="chart-title">Sensitive Category Breakdown</div>
+        <div class="chart-sub">Estimated column count by data sensitivity pattern</div>
+        <div style="margin-top: 8px;">
+          <div class="progress-row">
+            <div class="progress-label"><span>Name / Full Name</span><span>780</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:100%; background:#1e3a5f;"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Email Address</span><span>640</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:82%; background:#2d6a8f;"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Phone Number</span><span>515</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:66%; background:#0e9aa7;"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Physical Address</span><span>422</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:54%; background:#3d5a73;"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Account Number</span><span>340</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:44%; background:#d97706;"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Date of Birth</span><span>275</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:35%; background:#b45309;"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Other Sensitive Patterns</span><span>360</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:46%; background:#6b7280;"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span style="color:var(--red); font-weight:700">SSN / Tax ID</span><span style="color:var(--red)">88</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:11%; background:var(--red);"></div></div>
+          </div>
+        </div>
+        <div class="chart-note" style="margin-top:8px">Even a first-pass SQL metadata scan reveals a large potential sensitive-data footprint spanning identity, financial, and health-adjacent data patterns.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ SECTION 4: PERMISSION EXPOSURE ══════════════════ -->
+  <div class="section">
+    <div class="section-title">4 — Permission Exposure</div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="chart-title">Access Surface by Principal Type</div>
+        <div class="chart-sub">Distinct principals with any object-level access</div>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="permChart"></canvas>
+        </div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:14px;">
+          <div style="background:#f7f9fc; border-radius:6px; padding:12px 14px; border:1px solid var(--border);">
+            <div style="font-size:10px; font-weight:700; letter-spacing:0.8px; text-transform:uppercase; color:var(--text3)">Total Principals</div>
+            <div style="font-size:26px; font-weight:800; color:var(--navy);">847</div>
+          </div>
+          <div style="background:#fef2f2; border-radius:6px; padding:12px 14px; border:1px solid #fecaca;">
+            <div style="font-size:10px; font-weight:700; letter-spacing:0.8px; text-transform:uppercase; color:var(--text3)">Direct Table Perms</div>
+            <div style="font-size:26px; font-weight:800; color:var(--red);">312</div>
+            <div style="font-size:10px; color:var(--text3)">non-admin principals</div>
+          </div>
+        </div>
+        <div class="chart-note" style="margin-top:12px">Governance requires not only knowing where data is, but who can access it — and whether that access is justified, documented, and auditable.</div>
+      </div>
+      <div class="card">
+        <div class="chart-title">Top 10 Databases by Permission Surface</div>
+        <div class="chart-sub">Ranked by distinct principal count with any access right</div>
+        <table>
+          <thead><tr><th>#</th><th>Database</th><th>Type</th><th>Principals</th></tr></thead>
+          <tbody>
+            <tr><td class="rank">01</td><td class="db-name">CRM_Prod</td><td style="font-size:11px;color:var(--text3)">Vendor App</td><td><span class="perm-bar" style="width:90px"></span>147</td></tr>
+            <tr><td class="rank">02</td><td class="db-name">FinanceDW</td><td style="font-size:11px;color:var(--text3)">EDW</td><td><span class="perm-bar" style="width:76px"></span>124</td></tr>
+            <tr><td class="rank">03</td><td class="db-name">Lawson_Prod</td><td style="font-size:11px;color:var(--text3)">ERP</td><td><span class="perm-bar" style="width:68px"></span>112</td></tr>
+            <tr><td class="rank">04</td><td class="db-name">HRSystem_Prod</td><td style="font-size:11px;color:var(--text3)">HRIS</td><td><span class="perm-bar" style="width:55px"></span>90</td></tr>
+            <tr><td class="rank">05</td><td class="db-name">PatientData_Prod</td><td style="font-size:11px;color:var(--text3)">Clinical</td><td><span class="perm-bar" style="width:50px"></span>82</td></tr>
+            <tr><td class="rank">06</td><td class="db-name">OrderMgmt_Archive</td><td style="font-size:11px;color:var(--text3)">Archive</td><td><span class="perm-bar" style="width:44px"></span>72</td></tr>
+            <tr><td class="rank">07</td><td class="db-name">VendorPortal_Prod</td><td style="font-size:11px;color:var(--text3)">Vendor App</td><td><span class="perm-bar" style="width:38px"></span>62</td></tr>
+            <tr><td class="rank">08</td><td class="db-name">ComplianceArchive</td><td style="font-size:11px;color:var(--text3)">Compliance</td><td><span class="perm-bar" style="width:30px"></span>49</td></tr>
+            <tr><td class="rank">09</td><td class="db-name">ReportingDW</td><td style="font-size:11px;color:var(--text3)">EDW</td><td><span class="perm-bar" style="width:26px"></span>43</td></tr>
+            <tr><td class="rank">10</td><td class="db-name">LegacyERP_Prod</td><td style="font-size:11px;color:var(--text3)">Legacy</td><td><span class="perm-bar" style="width:22px"></span>36</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ SECTION 5 + 6: DOCUMENTATION + DBO ══════════════ -->
+  <div class="section">
+    <div class="section-title">5 — Documentation Coverage &nbsp;&amp;&nbsp; 6 — Schema Organisation</div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="chart-title">Metadata Documentation Coverage</div>
+        <div class="chart-sub">Percentage of SQL objects with useful business metadata</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:16px;">
+          <div style="background:#fef2f2; border-radius:6px; padding:12px 14px; text-align:center; border:1px solid #fecaca;">
+            <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text3); letter-spacing:0.8px;">Tables Documented</div>
+            <div style="font-size:30px; font-weight:800; color:var(--red); margin: 4px 0;">7%</div>
+            <div style="font-size:10px; color:var(--text3)">3,409 of 48,700</div>
+          </div>
+          <div style="background:#fef2f2; border-radius:6px; padding:12px 14px; text-align:center; border:1px solid #fecaca;">
+            <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text3); letter-spacing:0.8px;">Columns Documented</div>
+            <div style="font-size:30px; font-weight:800; color:var(--red); margin: 4px 0;">2%</div>
+            <div style="font-size:10px; color:var(--text3)">22,500 of 1,125,000</div>
+          </div>
+        </div>
+        <div class="chart-wrap" style="height:180px; display:flex; align-items:center; justify-content:center;">
+          <canvas id="docDonut"></canvas>
+        </div>
+        <div class="chart-note" style="margin-top:12px">The SQL estate contains well-defined structure, but almost no self-describing business metadata. 93% of tables have no useful description, owner, or classification.</div>
+      </div>
+      <div class="card">
+        <div class="chart-title">Schema Organisation — dbo Concentration</div>
+        <div class="chart-sub">% of all SQL objects by schema type</div>
+        <div class="chart-wrap" style="height:180px; display:flex; align-items:center; justify-content:center;">
+          <canvas id="dboDonut"></canvas>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:14px;">
+          <div style="background:#fef2f2; border-radius:6px; padding:10px 14px; border:1px solid #fecaca; text-align:center;">
+            <div style="font-size:28px; font-weight:800; color:var(--red);">91%</div>
+            <div style="font-size:11px; color:var(--text2);">Objects under <code style="background:#fee2e2; padding:1px 4px; border-radius:2px;">dbo</code></div>
+          </div>
+          <div style="background:#f7f9fc; border-radius:6px; padding:10px 14px; border:1px solid var(--border); text-align:center;">
+            <div style="font-size:28px; font-weight:800; color:var(--slate);">304</div>
+            <div style="font-size:11px; color:var(--text2);">Databases with 90%+ dbo objects</div>
+          </div>
+        </div>
+        <div class="chart-note" style="margin-top:12px">
+          <strong>dbo-heavy environments</strong> reduce the ability to infer business ownership or domain meaning from structure alone. Vendor applications, ORM patterns, and legacy ERP systems are primary drivers.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ SECTION 7: GROWTH TREND ═════════════════════════ -->
+  <div class="section">
+    <div class="section-title">7 — Data Growth / Governance Expansion</div>
+    <div class="grid-21">
+      <div class="card">
+        <div class="chart-title">SQL Governed Footprint — 6 Quarter Trend</div>
+        <div class="chart-sub">Total estimated TB across all 35 SQL instances</div>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="growthChart"></canvas>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:14px;">
+          <div style="background:#f7f9fc; border-radius:6px; padding:10px 14px; border:1px solid var(--border);">
+            <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text3); letter-spacing:0.8px;">Current Footprint</div>
+            <div style="font-size:22px; font-weight:800; color:var(--navy);">38.4 TB</div>
+          </div>
+          <div style="background:#fffbeb; border-radius:6px; padding:10px 14px; border:1px solid #fde68a;">
+            <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text3); letter-spacing:0.8px;">QoQ Growth</div>
+            <div style="font-size:22px; font-weight:800; color:var(--amber);">+8.7%</div>
+          </div>
+          <div style="background:#f7f9fc; border-radius:6px; padding:10px 14px; border:1px solid var(--border);">
+            <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text3); letter-spacing:0.8px;">Annual Run Rate</div>
+            <div style="font-size:22px; font-weight:800; color:var(--navy);">+34%</div>
+          </div>
+        </div>
+        <div class="chart-note" style="margin-top:12px">Governance complexity is increasing every quarter. Without a catalog, the documentation and classification gap widens with each growth cycle.</div>
+      </div>
+      <div class="card">
+        <div class="chart-title">Fastest Growing Databases</div>
+        <div class="chart-sub">QTD growth — Q1 2026</div>
+        <table>
+          <thead><tr><th>#</th><th>Database</th><th>Growth</th></tr></thead>
+          <tbody>
+            <tr><td class="rank">01</td><td class="db-name">CRM_Prod</td><td>+320 GB</td></tr>
+            <tr><td class="rank">02</td><td class="db-name">PatientData_Prod</td><td>+218 GB</td></tr>
+            <tr><td class="rank">03</td><td class="db-name">FinanceDW</td><td>+195 GB</td></tr>
+            <tr><td class="rank">04</td><td class="db-name">OrderMgmt_Archive</td><td>+147 GB</td></tr>
+            <tr><td class="rank">05</td><td class="db-name">AuditLog_Central</td><td>+112 GB</td></tr>
+            <tr><td class="rank">06</td><td class="db-name">Lawson_Prod</td><td>+98 GB</td></tr>
+            <tr><td class="rank">07</td><td class="db-name">ReportingDW</td><td>+87 GB</td></tr>
+            <tr><td class="rank">08</td><td class="db-name">HRSystem_Prod</td><td>+64 GB</td></tr>
+            <tr><td class="rank">09</td><td class="db-name">VendorPortal_Prod</td><td>+51 GB</td></tr>
+            <tr><td class="rank">10</td><td class="db-name">ComplianceArchive</td><td>+43 GB</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ SECTION 8: GOVERNANCE READINESS ══════════════════ -->
+  <div class="section">
+    <div class="section-title">8 — Governance Readiness &amp; Metadata Gap</div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="chart-title">Governance Risk Indicators</div>
+        <div class="chart-sub">Current metadata maturity against governance baseline</div>
+        <div class="rag-grid">
+          <div class="rag-card rag-red">
+            <div class="rag-label"><span class="rag-indicator dot-red"></span>Stewardship</div>
+            <div class="rag-value">241</div>
+            <div class="rag-sub">Databases without a named business steward</div>
+          </div>
+          <div class="rag-card rag-red">
+            <div class="rag-label"><span class="rag-indicator dot-red"></span>Descriptions</div>
+            <div class="rag-value">46,120</div>
+            <div class="rag-sub">Assets without any business description</div>
+          </div>
+          <div class="rag-card rag-red">
+            <div class="rag-label"><span class="rag-indicator dot-red"></span>Classification</div>
+            <div class="rag-value">298</div>
+            <div class="rag-sub">Databases without sensitivity classification</div>
+          </div>
+          <div class="rag-card rag-red">
+            <div class="rag-label"><span class="rag-indicator dot-red"></span>Sensitive Tagged</div>
+            <div class="rag-value">8%</div>
+            <div class="rag-sub">Of potential PII columns formally classified</div>
+          </div>
+          <div class="rag-card rag-amber">
+            <div class="rag-label"><span class="rag-indicator dot-amber"></span>Policy Coverage</div>
+            <div class="rag-value">12%</div>
+            <div class="rag-sub">Of databases under active data policy</div>
+          </div>
+          <div class="rag-card rag-red">
+            <div class="rag-label"><span class="rag-indicator dot-red"></span>Lineage</div>
+            <div class="rag-value">—</div>
+            <div class="rag-sub">Cross-system lineage not visible from SQL metadata</div>
+          </div>
+        </div>
+        <div class="chart-note" style="margin-top:14px">SQL metadata alone provides structure, but not enough business context, ownership, or lineage for enterprise governance. The gap between structural completeness and governance readiness is the core POC argument.</div>
+      </div>
+      <div class="card" style="display:flex; flex-direction:column; gap:14px;">
+        <div>
+          <div class="chart-title">Governance Readiness Score</div>
+          <div class="chart-sub">Composite score based on stewardship, classification, documentation, and policy coverage</div>
+          <div class="score-wrap">
+            <div class="score-circle">
+              <div class="score-inner">
+                <div class="score-num">18</div>
+                <div class="score-denom">/ 100</div>
+              </div>
+            </div>
+            <div class="score-label">Governance Readiness</div>
+            <div class="score-desc">Critical — Immediate catalog investment required</div>
+          </div>
+        </div>
+        <div style="background:#f7f9fc; border-radius:6px; padding:14px; border:1px solid var(--border);">
+          <div style="font-size:11px; font-weight:700; color:var(--text2); margin-bottom:8px; letter-spacing:0.5px;">SCORE COMPONENT BREAKDOWN</div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Stewardship Coverage</span><span style="color:var(--red)">9%</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:9%; background:var(--red);"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Metadata Documentation</span><span style="color:var(--red)">7%</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:7%; background:var(--red);"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Sensitivity Classification</span><span style="color:var(--red)">8%</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:8%; background:var(--red);"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Policy Compliance</span><span style="color:var(--amber)">12%</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:12%; background:var(--amber);"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Access Review Coverage</span><span style="color:var(--amber)">22%</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:22%; background:var(--amber);"></div></div>
+          </div>
+          <div class="progress-row">
+            <div class="progress-label"><span>Lineage &amp; Discoverability</span><span style="color:var(--red)">0%</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:1%; background:var(--red);"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ DBA INTERPRETATION + ASSUMPTIONS ═════════════════ -->
+  <div class="grid-2" style="margin-bottom:24px;">
+    <div class="dba-box">
+      <h3>DBA Lead Interpretation</h3>
+      <p>From the SQL Server perspective, the governance challenge is not only scale — it is metadata ambiguity at scale. The environment contains 352 databases, nearly 50,000 tables, and over 1.1 million columns. A large potential sensitive-data footprint exists within vendor application schemas that are heavily dbo-structured, ORM-generated, and poorly self-documented. ActiveBatch orchestration and EDW downstream dependencies mean cross-system lineage is invisible from SQL alone. Manual governance at this size is not feasible. A metadata catalog and lineage platform is required to improve discoverability, stewardship assignment, sensitivity classification, and audit readiness across the SQL estate — before regulatory or security exposure becomes a reportable event.</p>
+    </div>
+    <div class="assumptions">
+      <h4>POC Assumptions — Mock Data</h4>
+      <ul>
+        <li>All data is fabricated and used for POC design evaluation only</li>
+        <li>Table count estimated at avg 138 tables / database (range 20–800)</li>
+        <li>Column count estimated at avg 23 columns / table</li>
+        <li>Sensitive column counts based on name-pattern matching heuristic</li>
+        <li>Permission counts represent plausible enterprise AD + SQL login mix</li>
+        <li>Documentation coverage based on SQL Server extended properties survey</li>
+        <li>Growth trend is illustrative; actual figures require CMS telemetry</li>
+        <li>Governance readiness score is a composite mock index — not a vendor metric</li>
+        <li>Scope is SQL Server layer only. ETL, EDW, and other platforms are separate workstreams in the broader Atlan POC</li>
+      </ul>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<script>
+Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif";
+Chart.defaults.font.size   = 11;
+Chart.defaults.color       = '#4a5e74';
+
+/* ── DB Size Bar ─────────────────────────── */
+new Chart(document.getElementById('dbSizeChart'), {
+  type: 'bar',
+  data: {
+    labels: ['CRM_Prod','FinanceDW','Lawson_Prod','PatientData_Prod','OrderMgmt_Archive',
+             'HRSystem_Prod','VendorPortal_Prod','ComplianceArchive','ReportingDW','LegacyERP_Prod'],
+    datasets: [{
+      label: 'Size (TB)',
+      data: [4.0, 2.7, 1.9, 1.4, 1.1, 0.9, 0.7, 0.6, 0.5, 0.4],
+      backgroundColor: ['#b91c1c','#1e3a5f','#1e3a5f','#d97706','#2d6a8f',
+                         '#2d6a8f','#3d5a73','#3d5a73','#0e9aa7','#6b7280'],
+      borderRadius: 4, borderSkipped: false,
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid: { color: '#edf2f7' }, ticks: { callback: v => v+'TB' } },
+      y: { grid: { display: false }, ticks: { font: { size: 10 } } }
+    }
+  }
+});
+
+/* ── Sensitive Donut ─────────────────────── */
+new Chart(document.getElementById('sensitiveDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Name','Email','Phone','Address','Account No','DOB','Other','SSN/TaxID'],
+    datasets: [{
+      data: [780,640,515,422,340,275,360,88],
+      backgroundColor: ['#1e3a5f','#2d6a8f','#0e9aa7','#3d5a73','#d97706','#b45309','#6b7280','#b91c1c'],
+      borderWidth: 2, borderColor: '#ffffff',
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    cutout: '60%',
+    plugins: {
+      legend: { position: 'right', labels: { boxWidth: 10, padding: 8, font: { size: 10 } } }
+    }
+  }
+});
+
+/* ── Permission Bar ──────────────────────── */
+new Chart(document.getElementById('permChart'), {
+  type: 'bar',
+  data: {
+    labels: ['SQL Logins','AD Groups','Service Accounts','App Accounts'],
+    datasets: [
+      { label: 'Read Access',   data: [120,280, 82,50], backgroundColor: '#2d6a8f', borderRadius: 3 },
+      { label: 'Write Access',  data: [ 55,110, 35,18], backgroundColor: '#0e9aa7', borderRadius: 3 },
+      { label: 'Admin / Broad', data: [ 28, 55, 10, 4], backgroundColor: '#b91c1c', borderRadius: 3 },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { position: 'top', labels: { boxWidth: 10, padding: 10 } } },
+    scales: {
+      x: { stacked: true, grid: { display: false } },
+      y: { stacked: true, grid: { color: '#edf2f7' } }
+    }
+  }
+});
+
+/* ── Documentation Donut ─────────────────── */
+new Chart(document.getElementById('docDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Documented Tables (7%)','Undocumented Tables (93%)'],
+    datasets: [{
+      data: [7, 93],
+      backgroundColor: ['#15803d','#fecaca'],
+      borderWidth: 2, borderColor: '#ffffff',
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    cutout: '65%',
+    plugins: {
+      legend: { position: 'bottom', labels: { boxWidth: 10, padding: 10, font: { size: 10 } } }
+    }
+  }
+});
+
+/* ── dbo Donut ───────────────────────────── */
+new Chart(document.getElementById('dboDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['dbo schema (91%)','Domain schemas (9%)'],
+    datasets: [{
+      data: [91, 9],
+      backgroundColor: ['#1e3a5f','#0e9aa7'],
+      borderWidth: 2, borderColor: '#ffffff',
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    cutout: '65%',
+    plugins: {
+      legend: { position: 'bottom', labels: { boxWidth: 10, padding: 10, font: { size: 10 } } }
+    }
+  }
+});
+
+/* ── Growth Line ─────────────────────────── */
+new Chart(document.getElementById('growthChart'), {
+  type: 'line',
+  data: {
+    labels: ['Q4 2024','Q1 2025','Q2 2025','Q3 2025','Q4 2025','Q1 2026'],
+    datasets: [{
+      label: 'Total SQL Footprint (TB)',
+      data: [24.1, 27.3, 29.8, 32.2, 35.3, 38.4],
+      borderColor: '#2d6a8f',
+      backgroundColor: 'rgba(45,106,143,0.10)',
+      borderWidth: 2.5, pointRadius: 4,
+      pointBackgroundColor: '#2d6a8f',
+      fill: true, tension: 0.3,
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid: { color: '#edf2f7' } },
+      y: { grid: { color: '#edf2f7' }, ticks: { callback: v => v+' TB' } }
+    }
+  }
+});
+</script>
+</body>
+</html>

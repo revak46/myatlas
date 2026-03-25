@@ -1,0 +1,25 @@
+# Sensitive data — never commit
+.env
+.env.*
+secrets/
+private/
+
+# Personal tier 2 data
+life/personal/
+life/tier2/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (if any tooling added later)
+node_modules/
+npm-debug.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log

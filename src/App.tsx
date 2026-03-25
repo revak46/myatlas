@@ -1979,7 +1979,7 @@ type PillarDigest = {
   signal_count: number;
   week_count: number;
   suggestions: { action: string; generated_at: string; source: string }[];
-  top_tags: { tag: string; count: number }[];
+  top_tags: string[];
   cross_pillars: string[];
 };
 type HelmDigestData = {
@@ -1997,7 +1997,7 @@ type HelmDigestData = {
 function HelmDigest() {
   const [digest, setDigest] = useState<HelmDigestData | null>(null);
   const [open, setOpen] = useState(true);
-  const [actioned, setActioned] = useState<Record<string, "done" | "dismiss">>({});
+  const [actioned, setActioned] = useState<Record<string, "pin" | "on_it" | "not_relevant">>({});
 
   useEffect(() => {
     fetch("http://localhost:7777/digest")
@@ -2010,7 +2010,7 @@ function HelmDigest() {
     setActioned(prev => {
       const next = { ...prev };
       if (action === "unpin") delete next[suggestion];
-      else next[suggestion] = action === "on_it" && prev[suggestion] === "on_it" ? undefined as never : action;
+      else next[suggestion] = action;
       return next;
     });
     if (action !== "unpin") {
@@ -2032,9 +2032,9 @@ function HelmDigest() {
   // Derive flat arrays from nested pillars structure
   const suggestions = Object.entries(digest.pillars || {})
     .flatMap(([pillar, pd]) => (pd.suggestions || []).map(s => ({ pillar, action: s.action })));
-  const top_tags = Object.values(digest.pillars || {})
-    .flatMap(pd => pd.top_tags || [])
-    .sort((a, b) => b.count - a.count).slice(0, 8);
+  const top_tags = [...new Set(
+    Object.values(digest.pillars || {}).flatMap(pd => pd.top_tags || [])
+  )].slice(0, 10);
   const week_count = Object.values(digest.pillars || {})
     .reduce((sum, pd) => sum + (pd.week_count || 0), 0);
   const total_count = (digest.capture_signals || 0) + (digest.gmail_signals || 0);
@@ -2194,14 +2194,12 @@ function HelmDigest() {
                 color:"rgba(232,230,224,0.40)", marginBottom:8}}>Momentum Tags</div>
               <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
                 {top_tags.map(t => (
-                  <div key={t.tag} style={{
+                  <div key={t} style={{
                     background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.10)",
                     borderRadius:999, padding:"3px 10px", fontSize:11,
                     color:"rgba(232,230,224,0.60)",
                   }}>
-                    {t.tag}
-                    <span style={{marginLeft:5, fontSize:10,
-                      color:"rgba(232,230,224,0.30)"}}>×{t.count}</span>
+                    {t}
                   </div>
                 ))}
               </div>

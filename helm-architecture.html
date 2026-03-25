@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>⬡ Helm · System Architecture</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#05050e;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif}
+
+#stage{position:relative;width:100vw;height:100vh;overflow:hidden}
+#svg-layer{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
+#node-layer{position:absolute;inset:0;z-index:2;pointer-events:none}
+
+/* ── Background grid ── */
+#stage::before{
+  content:'';position:absolute;inset:0;
+  background-image:
+    linear-gradient(rgba(90,130,255,0.035) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(90,130,255,0.035) 1px,transparent 1px);
+  background-size:52px 52px;
+  animation:gridShift 60s linear infinite;
+}
+@keyframes gridShift{0%{background-position:0 0}100%{background-position:52px 52px}}
+
+/* ── Foundation box ── */
+.foundation{
+  position:absolute;border-radius:32px;
+  border:1px solid rgba(90,130,255,0.10);
+  background:rgba(90,130,255,0.02);
+  backdrop-filter:blur(2px);
+  transition:border-color .8s,box-shadow .8s;
+}
+.foundation.active{border-color:rgba(90,130,255,0.24);box-shadow:0 0 80px rgba(90,130,255,0.07)}
+
+/* ── Main nodes — 3× bigger ── */
+.node{
+  position:absolute;transform:translate(-50%,-50%);
+  border-radius:24px;padding:22px 30px;
+  background:#0d0d1a;
+  border:1.5px solid rgba(255,255,255,0.08);
+  display:flex;flex-direction:column;align-items:center;gap:7px;
+  text-align:center;min-width:190px;
+  opacity:0;transform:translate(-50%,-50%) scale(0.85);
+  transition:opacity .6s ease,transform .6s ease,border-color .4s,box-shadow .4s;
+}
+.node.visible{opacity:1;transform:translate(-50%,-50%) scale(1)}
+.node.active{border-color:rgba(90,130,255,0.60);box-shadow:0 0 44px rgba(90,130,255,0.22)}
+.node.pulse-active{border-color:rgba(232,184,75,0.60);box-shadow:0 0 44px rgba(232,184,75,0.20)}
+.node.capture-active{border-color:rgba(77,158,106,0.60);box-shadow:0 0 44px rgba(77,158,106,0.20)}
+
+.node-icon{font-size:40px;line-height:1}
+.node-name{font-size:18px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:#e0ddd6}
+.node-sub{font-size:12px;letter-spacing:.07em;color:rgba(224,221,214,.40);line-height:1.4}
+.node-port{font-size:11px;letter-spacing:.1em;color:#5a82ff;background:rgba(90,130,255,.10);
+  padding:4px 10px;border-radius:99px;margin-top:4px;border:1px solid rgba(90,130,255,.20)}
+.node-status{width:9px;height:9px;border-radius:50%;background:rgba(224,221,214,.18);margin-top:5px;transition:background .4s,box-shadow .4s}
+.node-status.on{background:#4d9e6a;box-shadow:0 0 8px #4d9e6a}
+.node-status.warn{background:#e8b84b;box-shadow:0 0 8px #e8b84b}
+
+/* ── Sub-nodes (health metrics) ── */
+.subnode{
+  position:absolute;transform:translate(-50%,-50%);
+  border-radius:16px;padding:14px 20px;
+  background:#0a0a14;border:1px solid rgba(255,255,255,0.07);
+  display:flex;align-items:center;gap:10px;min-width:150px;
+  opacity:0;transition:opacity .5s,box-shadow .4s;
+}
+.subnode.visible{opacity:1}
+.subnode.active{box-shadow:0 0 22px rgba(90,130,255,0.18);border-color:rgba(90,130,255,.32)}
+.subnode-icon{font-size:22px}
+.subnode-name{font-size:12px;font-weight:700;letter-spacing:.1em;color:#e0ddd6;text-transform:uppercase}
+.subnode-val{font-size:14px;font-weight:600;color:#5a82ff;letter-spacing:.03em;margin-top:2px}
+
+/* ── Device chips ── */
+.devchip{
+  position:absolute;transform:translate(-50%,-50%);
+  border-radius:10px;padding:8px 14px;
+  background:#0c0c18;border:1px solid rgba(255,255,255,0.07);
+  font-size:11px;letter-spacing:.07em;color:rgba(224,221,214,.55);
+  white-space:nowrap;
+  opacity:0;transition:opacity .5s,border-color .4s;
+}
+.devchip.visible{opacity:1}
+.devchip.connected{border-color:rgba(77,158,106,.38);color:#4d9e6a}
+
+/* ── Narrative banner ── */
+#narrative{
+  position:absolute;top:20px;left:50%;transform:translateX(-50%);
+  background:rgba(5,5,20,0.90);border:1px solid rgba(90,130,255,0.28);
+  border-radius:14px;padding:11px 28px;
+  font-size:13px;letter-spacing:.04em;color:rgba(224,221,214,.75);
+  text-align:center;z-index:10;
+  transition:opacity .4s;min-width:360px;max-width:520px;
+  backdrop-filter:blur(10px);
+}
+#narrative strong{color:#5a82ff;font-weight:600}
+
+#phase-dots{
+  position:absolute;bottom:20px;left:50%;transform:translateX(-50%);
+  display:flex;gap:8px;z-index:10;
+}
+.pdot{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.12);transition:background .4s,transform .4s}
+.pdot.active{background:#5a82ff;transform:scale(1.4)}
+
+/* ── Title & legend ── */
+#title{position:absolute;top:20px;left:28px;z-index:10}
+#title .t1{font-size:14px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#5a82ff}
+#title .t2{font-size:9px;letter-spacing:.12em;color:rgba(224,221,214,.28);margin-top:3px}
+
+#legend{position:absolute;bottom:20px;right:24px;z-index:10;display:flex;flex-direction:column;gap:7px}
+.leg{display:flex;align-items:center;gap:7px;font-size:10px;letter-spacing:.07em;color:rgba(224,221,214,.38)}
+.leg-line{width:22px;height:2px;border-radius:1px}
+
+/* ── SVG paths ── */
+.conn-path{fill:none;stroke-width:1.5;opacity:0;transition:opacity .8s}
+.conn-path.visible{opacity:1}
+.conn-path.blue {stroke:rgba(90,130,255,0.28);stroke-dasharray:none}
+.conn-path.gold {stroke:rgba(232,184,75,0.28)}
+.conn-path.green{stroke:rgba(77,158,106,0.28)}
+.conn-path.dim  {stroke:rgba(255,255,255,0.10)}
+
+/* ── Particles ── */
+.particle{
+  position:absolute;border-radius:50%;pointer-events:none;z-index:5;
+  animation:particleMove linear forwards;
+}
+@keyframes particleMove{
+  0%  {opacity:0;offset-distance:0%}
+  8%  {opacity:1}
+  92% {opacity:1}
+  100%{opacity:0;offset-distance:100%}
+}
+
+/* ── Data labels ── */
+.data-label{
+  position:absolute;transform:translate(-50%,-50%);
+  background:rgba(90,130,255,0.12);border:1px solid rgba(90,130,255,0.25);
+  border-radius:7px;padding:4px 10px;
+  font-size:10px;letter-spacing:.06em;color:#5a82ff;
+  opacity:0;transition:opacity .3s;white-space:nowrap;z-index:6;
+}
+.data-label.gold {background:rgba(232,184,75,0.10);border-color:rgba(232,184,75,0.25);color:#e8b84b}
+.data-label.green{background:rgba(77,158,106,0.10);border-color:rgba(77,158,106,0.25);color:#4d9e6a}
+.data-label.visible{opacity:1}
+</style>
+</head>
+<body>
+<div id="stage">
+  <svg id="svg-layer" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow-blue"  markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="rgba(90,130,255,0.7)"/></marker>
+      <marker id="arrow-gold"  markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="rgba(232,184,75,0.7)"/></marker>
+      <marker id="arrow-green" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="rgba(77,158,106,0.7)"/></marker>
+    </defs>
+  </svg>
+  <div id="node-layer"></div>
+
+  <div id="title">
+    <div class="t1">⬡ Helm · System Architecture</div>
+    <div class="t2">Mac Mini · Intelligence Infrastructure</div>
+  </div>
+  <div id="narrative"><strong>Initialising…</strong></div>
+  <div id="phase-dots"></div>
+  <div id="legend">
+    <div class="leg"><div class="leg-line" style="background:rgba(90,130,255,.7)"></div>Launch / Control</div>
+    <div class="leg"><div class="leg-line" style="background:rgba(77,158,106,.7)"></div>Data / Health</div>
+    <div class="leg"><div class="leg-line" style="background:rgba(232,184,75,.7)"></div>Pulse / Deploy</div>
+    <div class="leg"><div class="leg-line" style="background:rgba(255,255,255,.22)"></div>Network / API</div>
+  </div>
+</div>
+
+<script>
+const W = () => window.innerWidth;
+const H = () => window.innerHeight;
+
+// ── All positions as fractions of viewport ──────────────────
+// Foundation: left=0.06, right=0.94, top=0.05, bottom=0.95
+// All elements kept well inside those bounds
+const POS = {
+  myatlas:   [0.50, 0.12],
+  capture:   [0.19, 0.40],
+  system:    [0.65, 0.40],
+  pulse:     [0.19, 0.76],
+  github:    [0.37, 0.88],
+  vercel:    [0.50, 0.88],
+  web:       [0.63, 0.88],
+  anthropic: [0.83, 0.68],
+  // Helm System sub-nodes
+  cpu:       [0.54, 0.60],
+  memory:    [0.65, 0.60],
+  disk:      [0.76, 0.60],
+  // Device cluster (all inside right border)
+  devlib:    [0.83, 0.40],
+  dev_usb:   [0.75, 0.23],
+  dev_tb:    [0.84, 0.23],
+  dev_disp:  [0.75, 0.31],
+  dev_bt:    [0.84, 0.31],
+};
+function px(k){ return [POS[k][0]*W(), POS[k][1]*H()]; }
+
+// ── SVG ──────────────────────────────────────────────────────
+const svg = document.getElementById('svg-layer');
+
+function makePath(id, x1,y1, x2,y2, cls, curve=0.28){
+  const cx = (x1+x2)/2 + (y2-y1)*curve;
+  const cy = (y1+y2)/2 - (x2-x1)*curve;
+  const d  = `M${x1},${y1} Q${cx},${cy} ${x2},${y2}`;
+  const el = document.createElementNS('http://www.w3.org/2000/svg','path');
+  el.setAttribute('id', id);
+  el.setAttribute('d', d);
+  el.setAttribute('class', `conn-path ${cls}`);
+  if(cls.includes('blue'))  el.setAttribute('marker-end','url(#arrow-blue)');
+  if(cls.includes('gold'))  el.setAttribute('marker-end','url(#arrow-gold)');
+  if(cls.includes('green')) el.setAttribute('marker-end','url(#arrow-green)');
+  svg.appendChild(el);
+  return el;
+}
+
+// ── Node layer ────────────────────────────────────────────────
+const nl = document.getElementById('node-layer');
+
+function makeFoundation(){
+  const f   = document.createElement('div');
+  f.id      = 'foundation';
+  f.className = 'foundation';
+  const x = W()*0.06, y = H()*0.05;
+  f.style.cssText = `left:${x}px;top:${y}px;width:${W()*0.88}px;height:${H()*0.90}px`;
+  const lbl = document.createElement('div');
+  lbl.style.cssText = 'position:absolute;bottom:10px;right:20px;font-size:9px;letter-spacing:.14em;color:rgba(90,130,255,0.22);text-transform:uppercase;font-family:inherit';
+  lbl.textContent = '⬡ Mac Mini M4 · Intelligence Host';
+  f.appendChild(lbl);
+  nl.prepend(f);
+}
+
+function makeNode(id, x, y, icon, name, sub, port=''){
+  const el = document.createElement('div');
+  el.id = id; el.className = 'node';
+  el.style.left = x+'px'; el.style.top = y+'px';
+  el.innerHTML = `
+    <div class="node-icon">${icon}</div>
+    <div class="node-name">${name}</div>
+    <div class="node-sub">${sub}</div>
+    ${port?`<div class="node-port">:${port}</div>`:''}
+    <div class="node-status" id="${id}-status"></div>`;
+  nl.appendChild(el);
+}
+
+function makeSubnode(id, x, y, icon, name, val=''){
+  const el = document.createElement('div');
+  el.id = id; el.className = 'subnode';
+  el.style.left = x+'px'; el.style.top = y+'px';
+  el.innerHTML = `<div class="subnode-icon">${icon}</div><div><div class="subnode-name">${name}</div><div class="subnode-val" id="${id}-val">${val}</div></div>`;
+  nl.appendChild(el);
+}
+
+function makeDevchip(id, x, y, label){
+  const el = document.createElement('div');
+  el.id = id; el.className = 'devchip';
+  el.style.left = x+'px'; el.style.top = y+'px';
+  el.textContent = label;
+  nl.appendChild(el);
+}
+
+function makeDataLabel(id, x, y, text, cls=''){
+  const el = document.createElement('div');
+  el.id = id; el.className = `data-label ${cls}`;
+  el.style.left = x+'px'; el.style.top = y+'px';
+  el.textContent = text;
+  nl.appendChild(el);
+}
+
+// ── Particles ─────────────────────────────────────────────────
+function spawnParticle(pathId, color, size, dur, delay=0){
+  const path = document.getElementById(pathId);
+  if(!path) return;
+  const d = path.getAttribute('d');
+  if(!d) return;
+  setTimeout(()=>{
+    const p = document.createElement('div');
+    p.className = 'particle';
+    p.style.cssText = `width:${size}px;height:${size}px;background:${color};
+      box-shadow:0 0 ${size*3}px ${size*1.8}px ${color};
+      offset-path:path('${d}');animation-duration:${dur}ms;`;
+    document.getElementById('stage').appendChild(p);
+    p.addEventListener('animationend', ()=>p.remove());
+  }, delay);
+}
+function streamParticles(pathId, color, size, dur, interval, count=9999){
+  let i=0;
+  const id = setInterval(()=>{
+    spawnParticle(pathId, color, size, dur);
+    if(++i >= count) clearInterval(id);
+  }, interval);
+  return id;
+}
+
+// ── Helpers ───────────────────────────────────────────────────
+function show(id, cls='')  { const e=document.getElementById(id); if(e){ e.classList.add('visible'); if(cls) e.classList.add(cls); } }
+function hide(id, cls='')  { const e=document.getElementById(id); if(e){ e.classList.remove('visible'); if(cls) e.classList.remove(cls); } }
+function addCls(id,cls)    { const e=document.getElementById(id); if(e) e.classList.add(cls); }
+function remCls(id,cls)    { const e=document.getElementById(id); if(e) e.classList.remove(cls); }
+function setStatus(id, st) { const e=document.getElementById(id+'-status'); if(e) e.className='node-status '+st; }
+function setVal(id, v)     { const e=document.getElementById(id+'-val'); if(e) e.textContent=v; }
+
+// ── Narrative ─────────────────────────────────────────────────
+const PHASES = [
+  { txt: `<strong>Mac Mini</strong> — the foundation. Every component lives here.` },
+  { txt: `<strong>MyAtlas</strong> launches. The desktop hub that controls the whole ecosystem.` },
+  { txt: `MyAtlas spawns <strong>Helm Capture</strong> and <strong>Helm System</strong> in separate Chrome windows.` },
+  { txt: `<strong>Helm System</strong> begins monitoring — CPU, memory, and disk in real time.` },
+  { txt: `Helm System scans hardware ports. <strong>Device Library</strong> registers every connected device.` },
+  { txt: `<strong>Pulse Builder</strong> runs at 7am — builds today's card and pushes to GitHub.` },
+  { txt: `GitHub triggers <strong>Vercel</strong>. The card deploys and is live on the web within seconds.` },
+  { txt: `Helm System pings the <strong>Anthropic API</strong> every 30s to confirm connectivity.` },
+  { txt: `All systems running. <strong>MyAtlas</strong> is the window into everything — always on, always aware.` },
+];
+
+const narrative  = document.getElementById('narrative');
+const phaseDots  = document.getElementById('phase-dots');
+PHASES.forEach((_,i)=>{ const d=document.createElement('div'); d.className='pdot'+(i===0?' active':''); phaseDots.appendChild(d); });
+
+function setNarrative(idx){
+  narrative.style.opacity='0';
+  setTimeout(()=>{ narrative.innerHTML=PHASES[idx].txt; narrative.style.opacity='1'; },300);
+  document.querySelectorAll('.pdot').forEach((d,i)=>d.classList.toggle('active',i===idx));
+}
+
+// ── Init ──────────────────────────────────────────────────────
+let streams=[];
+
+function init(){
+  const [mAx,mAy]    = px('myatlas');
+  const [cAx,cAy]    = px('capture');
+  const [sYx,sYy]    = px('system');
+  const [pUx,pUy]    = px('pulse');
+  const [gHx,gHy]    = px('github');
+  const [vEx,vEy]    = px('vercel');
+  const [wBx,wBy]    = px('web');
+  const [aPx,aPy]    = px('anthropic');
+  const [cpx,cpy]    = px('cpu');
+  const [mmx,mmy]    = px('memory');
+  const [dkx,dky]    = px('disk');
+  const [dlx,dly]    = px('devlib');
+  const [u1x,u1y]    = px('dev_usb');
+  const [u2x,u2y]    = px('dev_tb');
+  const [u3x,u3y]    = px('dev_disp');
+  const [u4x,u4y]    = px('dev_bt');
+
+  makeFoundation();
+
+  // Main nodes
+  makeNode('myatlas',   mAx,mAy,  '⬡','MyAtlas',    'Desktop Hub · Launcher',  '');
+  makeNode('capture',   cAx,cAy,  '◉','Helm Capture','Content Logger',           '7777');
+  makeNode('system',    sYx,sYy,  '⬡','Helm System', 'Health Monitor',           '7778');
+  makeNode('pulse',     pUx,pUy,  '✦','Pulse',       'Daily Card Builder',       '');
+  makeNode('github',    gHx,gHy,  '◈','GitHub',      'Source Control',           '');
+  makeNode('vercel',    vEx,vEy,  '▲','Vercel',      'Edge Deploy',              '');
+  makeNode('web',       wBx,wBy,  '◌','Web / Phone', 'Live Endpoint',            '');
+  makeNode('anthropic', aPx,aPy,  '✦','Anthropic',   'Claude · API',             '');
+
+  // Health sub-nodes
+  makeSubnode('cpu',    cpx,cpy,  '⚙','CPU',    '—%');
+  makeSubnode('memory', mmx,mmy,  '◉','Memory', '— GB');
+  makeSubnode('disk',   dkx,dky,  '💾','Disk',   '— GB');
+
+  // Device library
+  makeSubnode('devlib', dlx,dly,  '◈','Device Lib', '0 devices');
+
+  // Device chips — all inside foundation border
+  makeDevchip('dev_usb',  u1x,u1y, '⬡  USB-A');
+  makeDevchip('dev_tb',   u2x,u2y, '⚡  Thunderbolt');
+  makeDevchip('dev_disp', u3x,u3y, '🖥  Display');
+  makeDevchip('dev_bt',   u4x,u4y, '◈  Bluetooth');
+
+  // Data labels
+  makeDataLabel('lbl-chrome1', (mAx+cAx)/2-18,(mAy+cAy)/2-16, 'Chrome --app','');
+  makeDataLabel('lbl-chrome2', (mAx+sYx)/2+18,(mAy+sYy)/2-16, 'Chrome --app','');
+  makeDataLabel('lbl-health',  (sYx+cpx)/2-10,(sYy+cpy)/2-14, 'health poll','green');
+  makeDataLabel('lbl-ports',   (sYx+dlx)/2,   (sYy+dly)/2-13, 'port scan','');
+  makeDataLabel('lbl-push',    (pUx+gHx)/2-10,(pUy+gHy)/2-15, 'git push','gold');
+  makeDataLabel('lbl-deploy',  (gHx+vEx)/2,   (gHy+vEy)/2-14, 'deploy','gold');
+  makeDataLabel('lbl-serve',   (vEx+wBx)/2,   (vEy+wBy)/2-14, 'serve','gold');
+  makeDataLabel('lbl-api',     (sYx+aPx)/2,   (sYy+aPy)/2-14, 'API ping','');
+
+  // SVG connection paths
+  makePath('p-ma-ca',  mAx,mAy,  cAx,cAy, 'blue',  -0.22);
+  makePath('p-ma-sy',  mAx,mAy,  sYx,sYy, 'blue',   0.22);
+  makePath('p-ma-pu',  mAx,mAy,  pUx,pUy, 'dim',   -0.08);
+  makePath('p-sy-cpu', sYx,sYy,  cpx,cpy, 'green', -0.10);
+  makePath('p-sy-mem', sYx,sYy,  mmx,mmy, 'green',  0.0);
+  makePath('p-sy-dsk', sYx,sYy,  dkx,dky, 'green',  0.12);
+  makePath('p-sy-dl',  sYx,sYy,  dlx,dly, 'blue',   0.0);
+  makePath('p-dl-u1',  dlx,dly,  u1x,u1y, 'dim',   -0.05);
+  makePath('p-dl-u2',  dlx,dly,  u2x,u2y, 'dim',    0.05);
+  makePath('p-dl-u3',  dlx,dly,  u3x,u3y, 'dim',   -0.05);
+  makePath('p-dl-u4',  dlx,dly,  u4x,u4y, 'dim',    0.05);
+  makePath('p-pu-gh',  pUx,pUy,  gHx,gHy, 'gold',   0.18);
+  makePath('p-gh-ve',  gHx,gHy,  vEx,vEy, 'gold',   0.0);
+  makePath('p-ve-wb',  vEx,vEy,  wBx,wBy, 'gold',   0.0);
+  makePath('p-sy-ap',  sYx,sYy,  aPx,aPy, 'dim',    0.18);
+
+  runAnimation();
+}
+
+// ── Animation sequence ────────────────────────────────────────
+function runAnimation(){
+  const seq=[]; let t=0;
+  function at(delay, fn){ seq.push({t:t+delay,fn}); t+=delay; }
+
+  // Phase 0 — Foundation
+  at(400,  ()=>{ setNarrative(0); addCls('foundation','active'); });
+  at(2800, ()=>{});
+
+  // Phase 1 — MyAtlas
+  at(200,  ()=>{ setNarrative(1); show('myatlas'); setStatus('myatlas','on'); });
+  at(2800, ()=>{});
+
+  // Phase 2 — Launch services
+  at(200,  ()=>{
+    setNarrative(2);
+    show('p-ma-ca'); show('p-ma-sy');
+    setTimeout(()=>{ show('lbl-chrome1'); show('lbl-chrome2'); },400);
+    spawnParticle('p-ma-ca','rgba(90,130,255,0.9)',5,720,0);
+    spawnParticle('p-ma-sy','rgba(90,130,255,0.9)',5,720,0);
+    setTimeout(()=>{
+      show('capture'); show('system');
+      setStatus('capture','on'); setStatus('system','on');
+      addCls('myatlas','active'); addCls('capture','capture-active');
+    },750);
+  });
+  at(3400, ()=>{ hide('lbl-chrome1'); hide('lbl-chrome2'); });
+
+  // Phase 3 — Health monitoring
+  at(100,  ()=>{
+    setNarrative(3); addCls('system','active');
+    show('p-sy-cpu'); show('p-sy-mem'); show('p-sy-dsk');
+    show('cpu'); show('memory'); show('disk');
+    setTimeout(()=>show('lbl-health'),300);
+    let v=0;
+    const iv = setInterval(()=>{
+      v++;
+      setVal('cpu',    Math.round(12+v*0.4)+'%');
+      setVal('memory', (14.2+v*0.08).toFixed(1)+' GB');
+      setVal('disk',   Math.round(420-v*0.5)+' GB');
+      if(v>=40) clearInterval(iv);
+    },60);
+    streams.push(streamParticles('p-sy-cpu','rgba(77,158,106,0.85)',3,650,850));
+    streams.push(streamParticles('p-sy-mem','rgba(77,158,106,0.85)',3,650,1050));
+    streams.push(streamParticles('p-sy-dsk','rgba(77,158,106,0.85)',3,650,1250));
+  });
+  at(3200, ()=>{ hide('lbl-health'); });
+
+  // Phase 4 — Device library
+  at(100,  ()=>{
+    setNarrative(4);
+    show('p-sy-dl'); show('devlib');
+    setTimeout(()=>show('lbl-ports'),300);
+    spawnParticle('p-sy-dl','rgba(90,130,255,0.85)',4,650,0);
+    setTimeout(()=>{
+      show('p-dl-u1'); show('p-dl-u2'); show('p-dl-u3'); show('p-dl-u4');
+      ['dev_usb','dev_tb','dev_disp','dev_bt'].forEach((id,i)=>{
+        setTimeout(()=>{
+          show(id,'connected');
+          spawnParticle('p-dl-'+['u1','u2','u3','u4'][i],'rgba(90,130,255,0.7)',3,500);
+        },i*260);
+      });
+      setTimeout(()=>setVal('devlib','4 devices'),1100);
+    },650);
+  });
+  at(3500, ()=>{ hide('lbl-ports'); });
+
+  // Phase 5 — Pulse push
+  at(200,  ()=>{
+    setNarrative(5);
+    show('p-ma-pu'); show('pulse'); setStatus('pulse','warn');
+    setTimeout(()=>{
+      show('p-pu-gh'); show('lbl-push');
+      for(let i=0;i<3;i++) spawnParticle('p-pu-gh','rgba(232,184,75,0.9)',4,750,i*180);
+      addCls('pulse','pulse-active');
+    },600);
+    setTimeout(()=>{ show('github'); setStatus('github','on'); },1500);
+  });
+  at(3000, ()=>{ hide('lbl-push'); });
+
+  // Phase 6 — Vercel deploy
+  at(100,  ()=>{
+    setNarrative(6);
+    show('p-gh-ve'); show('p-ve-wb');
+    show('lbl-deploy'); show('lbl-serve');
+    setTimeout(()=>{ show('vercel'); setStatus('vercel','on'); for(let i=0;i<3;i++) spawnParticle('p-gh-ve','rgba(232,184,75,0.85)',3,650,i*170); },300);
+    setTimeout(()=>{ show('web'); setStatus('web','on'); for(let i=0;i<3;i++) spawnParticle('p-ve-wb','rgba(232,184,75,0.85)',3,650,i*170); },1100);
+    streams.push(streamParticles('p-pu-gh','rgba(232,184,75,0.55)',3,750,8000));
+  });
+  at(3200, ()=>{ hide('lbl-deploy'); hide('lbl-serve'); });
+
+  // Phase 7 — API ping
+  at(100,  ()=>{
+    setNarrative(7);
+    show('p-sy-ap'); show('anthropic'); setStatus('anthropic','on');
+    setTimeout(()=>show('lbl-api'),300);
+    for(let i=0;i<2;i++) spawnParticle('p-sy-ap','rgba(255,255,255,0.55)',3,950,i*400);
+    streams.push(streamParticles('p-sy-ap','rgba(255,255,255,0.38)',2,950,9000));
+  });
+  at(3000, ()=>{ hide('lbl-api'); });
+
+  // Phase 8 — Steady state
+  at(200,  ()=>{
+    setNarrative(8);
+    streams.push(streamParticles('p-ma-ca','rgba(90,130,255,0.45)',2,820,5000));
+    streams.push(streamParticles('p-ma-sy','rgba(90,130,255,0.45)',2,820,5500));
+    streams.push(streamParticles('p-sy-dl','rgba(90,130,255,0.45)',2,650,7000));
+  });
+  at(4800, ()=>{});
+
+  // Loop
+  at(500,  ()=>restart());
+  seq.forEach(({t,fn})=>setTimeout(fn,t));
+}
+
+function restart(){
+  streams.forEach(id=>clearInterval(id)); streams=[];
+  ['myatlas','capture','system','pulse','github','vercel','web','anthropic'].forEach(id=>{
+    hide(id); setStatus(id,'');
+    ['active','capture-active','pulse-active'].forEach(c=>remCls(id,c));
+  });
+  ['cpu','memory','disk','devlib'].forEach(id=>{ hide(id); setVal(id,'—'); });
+  setVal('devlib','0 devices');
+  ['dev_usb','dev_tb','dev_disp','dev_bt'].forEach(id=>hide(id,'connected'));
+  ['p-ma-ca','p-ma-sy','p-ma-pu','p-sy-cpu','p-sy-mem','p-sy-dsk','p-sy-dl',
+   'p-dl-u1','p-dl-u2','p-dl-u3','p-dl-u4','p-pu-gh','p-gh-ve','p-ve-wb','p-sy-ap'].forEach(id=>hide(id));
+  ['lbl-chrome1','lbl-chrome2','lbl-health','lbl-ports','lbl-push','lbl-deploy','lbl-serve','lbl-api'].forEach(id=>hide(id));
+  remCls('foundation','active');
+  document.querySelectorAll('.particle').forEach(p=>p.remove());
+  setTimeout(()=>runAnimation(), 500);
+}
+
+// ── Boot ──────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', ()=>setTimeout(init, 300));
+
+let resizeTimer;
+window.addEventListener('resize', ()=>{
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(()=>{
+    streams.forEach(id=>clearInterval(id)); streams=[];
+    nl.innerHTML='';
+    document.querySelectorAll('.particle').forEach(p=>p.remove());
+    while(svg.children.length > 1) svg.removeChild(svg.lastChild);
+    init();
+  },400);
+});
+</script>
+</body>
+</html>

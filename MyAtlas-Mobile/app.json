@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "MyAtlas",
+    "slug": "myatlas-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.revak46.myatlas"
+    },
+    "newArchEnabled": false
+  }
+}
