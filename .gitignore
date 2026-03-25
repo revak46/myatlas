@@ -3,3 +3,6 @@ node_modules
 dist
 .DS_Store
 .vercel
+
+# Rust / Tauri build artifacts — never commit these
+src-tauri/target/
