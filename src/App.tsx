@@ -1388,20 +1388,21 @@ function DayShell({ date, palette, travelTrips, events, onAddEvent, onEditEvent 
   );
   useEffect(() => {
     if (tripsForDayEarly.length === 0) { setTripSignals([]); return; }
-    const tripKeywords = tripsForDayEarly.flatMap(t =>
+    // Trip-specific keywords — must match at least one for a signal to qualify.
+    // Generic travel tags alone (e.g. "car rental") are not enough — they'd bleed
+    // across trips (Houston car rental showing on Lagos dates, etc.)
+    const tripKeywords = new Set(tripsForDayEarly.flatMap(t =>
       [t.title.toLowerCase(), t.location.split(",")[0].toLowerCase()]
-    );
-    const travelTags = new Set([
-      ...tripKeywords,
-      "travel","car rental","flight","lodging","hotel","trip planning",
-      "logistics","transportation","travel & flights",
-    ]);
+    ));
     fetch("http://localhost:7777/signals")
       .then(r => r.ok ? r.json() : Promise.reject())
       .then((sigs: HelmSignal[]) => {
-        const relevant = sigs.filter(s =>
-          (s.tags || []).some(tag => travelTags.has(tag.toLowerCase()))
-        ).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+        const relevant = sigs.filter(s => {
+          const tags = (s.tags || []).map(t => t.toLowerCase());
+          const text = (s.signal || "").toLowerCase();
+          // Signal must reference this trip's name or city — not just any travel tag
+          return [...tripKeywords].some(kw => tags.includes(kw) || text.includes(kw));
+        }).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
         setTripSignals(relevant);
       })
       .catch(() => {});
