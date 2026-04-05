@@ -4,18 +4,190 @@ import { invoke } from "@tauri-apps/api/core";
 const WEEK_STARTS_ON_MONDAY = true;
 const DAY_START_HOUR = 4;
 
+// Build version stamp — visible in Helm footer for stale-binary detection
+const MYATLAS_BUILD = "1.1.0";
+const MYATLAS_BUILD_DATE = "2026-03-25";
+
 type ViewMode = "launch" | "pods" | "week" | "day" | "helm";
 type TravelStatus = "DONE" | "IN_PROGRESS" | "NOT_STARTED" | "TBD";
 type EventLane = "Work" | "Family" | "Health" | "Travel" | "Money" | "Creative";
 type EventType = "plan" | "reflection" | "task" | "milestone";
 type EventStatus = "not_started" | "in_progress" | "done" | "cancelled";
 
+// ── Travel Signal System ──
+// Each trip decomposes into typed signals — discrete, actionable units
+// with their own timelines, urgency, and surface behavior.
+type TravelSignalType =
+  | "flight_outbound"    // carrier, route, confirmation, seat, departure
+  | "flight_return"      // same shape, return leg
+  | "lodging"            // property, address, check-in/out, confirmation, host
+  | "car_rental"         // agency, pickup/dropoff, confirmation
+  | "checkin_reminder"   // derived: auto-surfaces T-24h before flight/lodging
+  | "ground_transport"   // rideshare, shuttle, directions between venues
+  | "activity"           // planned activities, excursions, reservations
+  | "packing"            // packing list items, weather-driven suggestions
+  | "document";          // passport, visa, boarding pass, insurance
+
+type TravelSignalUrgency = "none" | "low" | "upcoming" | "action_now" | "overdue";
+
+type TravelSignal = {
+  id: string;
+  type: TravelSignalType;
+  label: string;                     // human-readable: "UA 2197 IAH → ORD"
+  status: TravelStatus;
+  actionDate?: Date;                 // when this signal becomes urgent
+  confirmationRef?: string;          // booking confirmation number
+  details: Record<string, string>;   // flexible k/v: carrier, seat, address, etc.
+  notes?: string;
+  urgency?: TravelSignalUrgency;     // computed at render time
+};
+
 type TravelTrip = {
   id: string; title: string; location: string;
   start: Date; end: Date; tags: string[];
+  signals: TravelSignal[];           // decomposed signal array
+  // Legacy compat — derived from signals, used by existing UI until full migration
   status: { flight: TravelStatus; lodging: TravelStatus; transport: TravelStatus };
   notes?: string;
 };
+
+// Derive legacy status from signals for backward compatibility
+function deriveStatusFromSignals(signals: TravelSignal[]): TravelTrip["status"] {
+  const best = (types: TravelSignalType[]): TravelStatus => {
+    const matches = signals.filter(s => types.includes(s.type));
+    if (matches.length === 0) return "TBD";
+    if (matches.every(s => s.status === "DONE")) return "DONE";
+    if (matches.some(s => s.status === "IN_PROGRESS" || s.status === "DONE")) return "IN_PROGRESS";
+    if (matches.some(s => s.status === "NOT_STARTED")) return "NOT_STARTED";
+    return "TBD";
+  };
+  return {
+    flight:    best(["flight_outbound", "flight_return"]),
+    lodging:   best(["lodging"]),
+    transport: best(["car_rental", "ground_transport"]),
+  };
+}
+
+// Compute signal urgency based on current time vs actionDate
+// @ts-expect-error — reserved for signal urgency rendering (used by DayShell when signal panel ships)
+function computeSignalUrgency(signal: TravelSignal, now: Date = new Date()): TravelSignalUrgency {
+  if (signal.status === "DONE") return "none";
+  if (!signal.actionDate) return signal.status === "NOT_STARTED" ? "low" : "none";
+  const hoursUntil = (signal.actionDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+  if (hoursUntil < 0) return "overdue";
+  if (hoursUntil < 3) return "action_now";
+  if (hoursUntil < 24) return "upcoming";
+  if (hoursUntil < 72) return "low";
+  return "none";
+}
+
+// ── Helm Notes Intelligence ──
+// Parses freeform trip notes into structured TravelSignals.
+// Runs client-side as a lightweight heuristic layer; Helm server
+// can override with richer ML-parsed signals from Gmail/captures.
+function parseNotesIntoSignals(notes: string, tripId: string): TravelSignal[] {
+  const parsed: TravelSignal[] = [];
+  const lines = notes.split(/[.\n]+/).map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+
+    // Flight detection: "UA 2197", "Southwest", "flight booked", airline names
+    const flightMatch = lower.match(
+      /\b(ua|united|southwest|sw|delta|dl|american|aa|spirit|nk|frontier|jetblue|b6)\s*(\d{1,4})?\b/
+    );
+    if (flightMatch || lower.includes("flight")) {
+      const isReturn = lower.includes("return") || lower.includes("iah→") || lower.includes("iah ->");
+      const isOutbound = lower.includes("outbound") || lower.includes("→iah") || lower.includes("-> iah") || lower.includes("going");
+      const type: TravelSignalType = isReturn ? "flight_return" : isOutbound ? "flight_outbound" : "flight_outbound";
+
+      // Extract route pattern: "IAH→ORD", "IAH - ORD", "IAH to ORD"
+      const routeMatch = line.match(/\b([A-Z]{3})\s*[→\->to]+\s*([A-Z]{3})\b/i);
+      // Extract seat pattern: "Seats 39A-D", "Seat 14C"
+      const seatMatch = line.match(/seats?\s+([\w\d]+[-–]?[\w\d]*)/i);
+      // Extract time: "6:40PM", "18:40"
+      const timeMatch = line.match(/\b(\d{1,2}:\d{2}\s*[AaPp][Mm]?)\b/);
+
+      const details: Record<string, string> = {};
+      if (flightMatch?.[1]) details.carrier = flightMatch[1].toUpperCase();
+      if (flightMatch?.[2]) details.flightNumber = flightMatch[2];
+      if (routeMatch) details.route = `${routeMatch[1].toUpperCase()} → ${routeMatch[2].toUpperCase()}`;
+      if (seatMatch) details.seat = seatMatch[1];
+      if (timeMatch) details.departure = timeMatch[1];
+
+      // Don't duplicate if we already parsed a signal of this type
+      if (!parsed.some(p => p.type === type)) {
+        parsed.push({
+          id: `${tripId}-${type}-parsed`,
+          type,
+          label: details.carrier && details.flightNumber
+            ? `${details.carrier} ${details.flightNumber}${details.route ? ` ${details.route}` : ""}`
+            : `Flight ${isReturn ? "(return)" : "(outbound)"}`,
+          status: lower.includes("booked") || lower.includes("confirmed") || lower.includes("done") ? "DONE" : "IN_PROGRESS",
+          details,
+          notes: line,
+        });
+      }
+    }
+
+    // Lodging detection
+    if (lower.includes("lodging") || lower.includes("airbnb") || lower.includes("vrbo") ||
+        lower.includes("hotel") || lower.includes("stay") || lower.includes("accommodation")) {
+      const isPending = lower.includes("pending") || lower.includes("tbd") || lower.includes("shortlist");
+      if (!parsed.some(p => p.type === "lodging")) {
+        parsed.push({
+          id: `${tripId}-lodging-parsed`,
+          type: "lodging",
+          label: "Accommodation",
+          status: isPending ? "IN_PROGRESS" : lower.includes("booked") ? "DONE" : "NOT_STARTED",
+          details: {},
+          notes: line,
+        });
+      }
+    }
+
+    // Car rental detection
+    if (lower.includes("rental") || lower.includes("rent a car") || lower.includes("car rental") ||
+        lower.includes("hertz") || lower.includes("enterprise") || lower.includes("avis") || lower.includes("turo")) {
+      const isPending = lower.includes("pending") || lower.includes("tbd");
+      if (!parsed.some(p => p.type === "car_rental")) {
+        parsed.push({
+          id: `${tripId}-car-rental-parsed`,
+          type: "car_rental",
+          label: "Car Rental",
+          status: isPending || lower.includes("not started") ? "NOT_STARTED" : lower.includes("booked") ? "DONE" : "IN_PROGRESS",
+          details: {},
+          notes: line,
+        });
+      }
+    }
+  }
+
+  return parsed;
+}
+
+// Generate check-in reminder signals from existing flight/lodging signals
+function generateCheckinReminders(signals: TravelSignal[], tripId: string): TravelSignal[] {
+  const reminders: TravelSignal[] = [];
+  for (const sig of signals) {
+    if ((sig.type === "flight_outbound" || sig.type === "flight_return" || sig.type === "lodging")
+        && sig.status === "DONE" && sig.actionDate) {
+      const reminderDate = new Date(sig.actionDate.getTime() - 24 * 60 * 60 * 1000);
+      reminders.push({
+        id: `${tripId}-checkin-${sig.type}`,
+        type: "checkin_reminder",
+        label: sig.type === "lodging"
+          ? `Check-in reminder: ${sig.label}`
+          : `Flight check-in: ${sig.label}`,
+        status: new Date() > sig.actionDate ? "DONE" : "NOT_STARTED",
+        actionDate: reminderDate,
+        details: { parentSignal: sig.id },
+        notes: `Check in 24h before: ${sig.label}`,
+      });
+    }
+  }
+  return reminders;
+}
 
 type LifeEvent = {
   id: string; title: string; lane: EventLane; type: EventType;
@@ -676,22 +848,174 @@ function LaunchScreen({ onEnter }: { onEnter: (mode: ViewMode) => void }) {
 
 export default function App() {
   // Hardcoded planned trips — fallback and unconfirmed future trips
-  const PLANNED_TRIPS = useMemo<TravelTrip[]>(() => [
-    {
-      id:"houston-2026", title:"Houston", location:"Houston, TX",
-      start:new Date(2026,3,8), end:new Date(2026,3,12), tags:["Travel","Family?"],
-      status:{flight:"DONE",lodging:"IN_PROGRESS",transport:"NOT_STARTED"},
-      notes:"Flights booked. Lodging + rental car pending.",
-    },
-    {
-      id:"lagos-2026", title:"Lagos", location:"Lagos, Nigeria",
-      start:new Date(2026,10,24), end:new Date(2026,10,30), tags:["Travel","All 4 traveling"],
-      status:{flight:"IN_PROGRESS",lodging:"TBD",transport:"TBD"},
-      notes:"Flights on installment payments. Exact dates + lodging/transport TBD.",
-    },
-  ], []);
+  // Signals are the source of truth; legacy `status` derived for backward compat
+  const PLANNED_TRIPS = useMemo<TravelTrip[]>(() => {
+    const houstonSignals: TravelSignal[] = [
+      {
+        id: "houston-2026-flight-outbound",
+        type: "flight_outbound",
+        label: "SW 455 MDW → HOU",
+        status: "DONE",
+        actionDate: new Date(2026, 3, 8, 7, 25),
+        details: {
+          carrier: "SW", flightNumber: "455",
+          route: "MDW → HOU",
+          departure: "7:25 AM", arrival: "10:05 AM",
+          aircraft: "Boeing 737 MAX8",
+          passengers: "4",
+          fare: "Basic",
+        },
+        notes: "Southwest 455 MDW→HOU. 4 passengers. Basic fare — 24hr check-in required Apr 7.",
+      },
+      {
+        id: "houston-2026-flight-return",
+        type: "flight_return",
+        label: "UA 2197 IAH → ORD",
+        status: "DONE",
+        actionDate: new Date(2026, 3, 12, 18, 40),
+        details: {
+          carrier: "UA", flightNumber: "2197",
+          route: "IAH → ORD",
+          departure: "6:40 PM", arrival: "9:31 PM",
+          aircraft: "Airbus A321neo",
+          cabin: "United Economy (L)",
+          seat: "39A-D",
+        },
+        notes: "Return flight confirmed. Seats 39A-D. Drop-off at IAH (~45 min from hotel).",
+      },
+      {
+        id: "houston-2026-lodging",
+        type: "lodging",
+        label: "Marriott Residence Inn — Energy Corridor",
+        status: "DONE",
+        actionDate: new Date(2026, 3, 8, 15, 0),  // standard 3pm check-in
+        details: {
+          property: "Residence Inn by Marriott Houston West/Energy Corridor",
+          room: "2 Bedroom Suite (2 queen + sofa bed)",
+          guests: "4",
+          cost: "$785.66",
+        },
+        notes: "Apr 8-12, 4 nights. 2BR suite for the family.",
+      },
+      {
+        id: "houston-2026-car-rental",
+        type: "car_rental",
+        label: "Apex Auto — Mercedes GLC",
+        status: "DONE",
+        actionDate: new Date(2026, 3, 8, 10, 30),  // pickup after flight lands
+        details: {
+          agency: "Apex Auto Group",
+          vehicle: "Mercedes-Benz GLC-Class 2020",
+          mileage: "800 miles included",
+          pickup: "Houston Hobby (HOU)",
+          dropoff: "George Bush Intercontinental (IAH)",
+        },
+        notes: "Pickup at Hobby, drop-off at IAH — different airports, ~45 min apart.",
+      },
+      {
+        id: "houston-2026-birthday",
+        type: "activity",
+        label: "Taiwo & Kehinde's 50th Birthday",
+        status: "NOT_STARTED",
+        actionDate: new Date(2026, 3, 11, 18, 0),
+        details: {
+          venue: "Mara Villa, 1419 Avenue D, Katy TX 77493",
+          theme: "Cheers to 50 Years",
+          dress: "Touch of Vibrancy",
+        },
+        notes: "Anchor event. Apr 11 at 6:00 PM. Dress: Touch of Vibrancy.",
+      },
+      {
+        id: "houston-2026-topgolf",
+        type: "activity",
+        label: "Topgolf Katy",
+        status: "TBD",
+        details: { venue: "Topgolf Katy" },
+        notes: "Day TBD. Family outing.",
+      },
+      {
+        id: "houston-2026-checkin-outbound",
+        type: "checkin_reminder",
+        label: "Flight check-in: SW 455",
+        status: "NOT_STARTED",
+        actionDate: new Date(2026, 3, 7, 7, 25),  // T-24h before departure
+        details: { parentSignal: "houston-2026-flight-outbound" },
+        notes: "Southwest Basic fare — check in EXACTLY at 24hr mark (Apr 7 7:25am).",
+      },
+      {
+        id: "houston-2026-checkin-return",
+        type: "checkin_reminder",
+        label: "Flight check-in: UA 2197",
+        status: "NOT_STARTED",
+        actionDate: new Date(2026, 3, 11, 18, 40),  // T-24h before return
+        details: { parentSignal: "houston-2026-flight-return" },
+        notes: "Check in to UA 2197 — opens 24h before departure.",
+      },
+    ];
+
+    const lagosSignals: TravelSignal[] = [
+      {
+        id: "lagos-2026-flight-outbound",
+        type: "flight_outbound",
+        label: "Flight to Lagos",
+        status: "IN_PROGRESS",
+        details: { note: "Flights on installment payments" },
+        notes: "Installment payment plan — exact carrier/route TBD.",
+      },
+      {
+        id: "lagos-2026-flight-return",
+        type: "flight_return",
+        label: "Return from Lagos",
+        status: "TBD",
+        details: {},
+      },
+      {
+        id: "lagos-2026-lodging",
+        type: "lodging",
+        label: "Lagos Accommodation",
+        status: "TBD",
+        details: {},
+      },
+      {
+        id: "lagos-2026-ground",
+        type: "ground_transport",
+        label: "Lagos Ground Transport",
+        status: "TBD",
+        details: {},
+        notes: "Local transport TBD.",
+      },
+      {
+        id: "lagos-2026-docs",
+        type: "document",
+        label: "Travel Documents",
+        status: "NOT_STARTED",
+        details: { note: "Passport validity, any visa requirements" },
+        notes: "Verify passport expiry dates for all 4 travelers.",
+      },
+    ];
+
+    return [
+      {
+        id: "houston-2026", title: "Houston", location: "Houston / Katy, TX",
+        start: new Date(2026, 3, 8), end: new Date(2026, 3, 12),
+        tags: ["Travel", "Family"],
+        signals: houstonSignals,
+        status: deriveStatusFromSignals(houstonSignals),
+        notes: "FULLY BOOKED — SW 455 MDW→HOU, Marriott Residence Inn, Apex Mercedes GLC. Anchor: 50th birthday Apr 11.",
+      },
+      {
+        id: "lagos-2026", title: "Lagos", location: "Lagos, Nigeria",
+        start: new Date(2026, 10, 24), end: new Date(2026, 10, 30),
+        tags: ["Travel", "All 4 traveling"],
+        signals: lagosSignals,
+        status: deriveStatusFromSignals(lagosSignals),
+        notes: "Flights on installment payments. Exact dates + lodging/transport TBD.",
+      },
+    ];
+  }, []);
 
   // Confirmed trips from Helm Capture /trips — parsed from real bookings + Gmail
+  // Server may return `signals[]` (new) or legacy `status{}` (old). We handle both.
   const [confirmedTrips, setConfirmedTrips] = useState<TravelTrip[]>([]);
   useEffect(() => {
     fetch("http://localhost:7777/trips")
@@ -699,39 +1023,62 @@ export default function App() {
       .then((data: Array<{
         id: string; title: string; location: string;
         start: string; end: string; tags: string[];
-        status: { flight: string; lodging: string; transport: string };
+        status?: { flight: string; lodging: string; transport: string };
+        signals?: TravelSignal[];
         notes?: string;
       }>) => {
-        setConfirmedTrips(data.map(t => ({
-          id:       t.id,
-          title:    t.title,
-          location: t.location,
-          start:    new Date(t.start + "T12:00:00"),
-          end:      new Date(t.end   + "T12:00:00"),
-          tags:     t.tags,
-          status:   t.status as TravelTrip["status"],
-          notes:    t.notes ?? "",
-        })));
+        setConfirmedTrips(data.map(t => {
+          // If server sends signals, use them; otherwise parse notes as intelligence layer
+          const serverSignals = t.signals ?? [];
+          const notesSignals = t.notes ? parseNotesIntoSignals(t.notes, t.id) : [];
+          // Merge: server signals take precedence, notes fill gaps
+          const serverTypes = new Set(serverSignals.map(s => s.type));
+          const merged = [...serverSignals, ...notesSignals.filter(ns => !serverTypes.has(ns.type))];
+          // Generate check-in reminders from confirmed signals
+          const reminders = generateCheckinReminders(merged, t.id);
+          const reminderTypes = new Set(merged.filter(s => s.type === "checkin_reminder").map(s => s.details.parentSignal));
+          const newReminders = reminders.filter(r => !reminderTypes.has(r.details.parentSignal));
+          const allSignals = [...merged, ...newReminders];
+
+          return {
+            id:       t.id,
+            title:    t.title,
+            location: t.location,
+            start:    new Date(t.start + "T12:00:00"),
+            end:      new Date(t.end   + "T12:00:00"),
+            tags:     t.tags,
+            signals:  allSignals,
+            status:   allSignals.length > 0
+              ? deriveStatusFromSignals(allSignals)
+              : (t.status as TravelTrip["status"]) ?? { flight: "TBD", lodging: "TBD", transport: "TBD" },
+            notes:    t.notes ?? "",
+          };
+        }));
       })
       .catch(() => {}); // silent — PLANNED_TRIPS serve as fallback
   }, []);
 
   // Merge: confirmed trips take precedence; planned trips fill any gaps
+  // Signal-aware merge: confirmed signals override planned; planned fill gaps by type
   const travelTrips: TravelTrip[] = useMemo(() => {
     if (confirmedTrips.length === 0) return PLANNED_TRIPS;
-    // Merge confirmed trips with planned trips — preserve the most specific status from either source
-    const mergeStatus = (
-      confirmed: TravelTrip["status"],
-      planned: TravelTrip["status"]
-    ): TravelTrip["status"] => ({
-      flight:   confirmed.flight   !== "TBD" ? confirmed.flight   : planned.flight,
-      lodging:  confirmed.lodging  !== "TBD" ? confirmed.lodging  : planned.lodging,
-      transport: confirmed.transport !== "TBD" ? confirmed.transport : planned.transport,
-    });
+
+    const mergeSignals = (confirmed: TravelSignal[], planned: TravelSignal[]): TravelSignal[] => {
+      const confirmedTypes = new Set(confirmed.map(s => s.type));
+      // Confirmed signals take precedence; planned fill any type gaps
+      return [...confirmed, ...planned.filter(ps => !confirmedTypes.has(ps.type))];
+    };
+
     const merged = confirmedTrips.map(ct => {
       const planned = PLANNED_TRIPS.find(p => p.title.toLowerCase() === ct.title.toLowerCase());
       if (!planned) return ct;
-      return { ...ct, status: mergeStatus(ct.status, planned.status), notes: ct.notes || planned.notes };
+      const signals = mergeSignals(ct.signals || [], planned.signals || []);
+      return {
+        ...ct,
+        signals,
+        status: deriveStatusFromSignals(signals),
+        notes: ct.notes || planned.notes,
+      };
     });
     const confirmedTitles = new Set(confirmedTrips.map(t => t.title.toLowerCase()));
     const extras = PLANNED_TRIPS.filter(p => !confirmedTitles.has(p.title.toLowerCase()));
@@ -752,10 +1099,239 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState<Date>(startOfDay(new Date(2026,0,1)));
   const [notesOpen, setNotesOpen] = useState(false);
 
+  // ── Helm auth token (loaded from disk via Tauri invoke) ──
+  const [helmToken, setHelmToken] = useState<string>("");
+  useEffect(() => {
+    const loadToken = async () => {
+      try {
+        const t = await invoke<string>("read_helm_token");
+        if (t) setHelmToken(t);
+      } catch { /* Helm not started yet */ }
+    };
+    loadToken();
+    const iv = setInterval(loadToken, 30000);
+    return () => clearInterval(iv);
+  }, []);
+
+  // ── Gmail calendar signal → Day view bridge ──
+  const [calendarSignalEvents, setCalendarSignalEvents] = useState<LifeEvent[]>([]);
+  useEffect(() => {
+    fetch("http://localhost:7777/calendar-events")
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then((data: Array<{id:string; title:string; lane:string; type:string; status:string; date:string; startHour:number; endHour:number; tags:string[]; notes:string}>) => {
+        const mapped: LifeEvent[] = data.map(d => ({
+          id: d.id,
+          title: d.title,
+          lane: (d.lane || "Work") as EventLane,
+          type: (d.type || "task") as EventType,
+          status: (d.status || "not_started") as EventStatus,
+          date: new Date(d.date),
+          startHour: d.startHour,
+          endHour: d.endHour,
+          tags: d.tags || ["helm-signal"],
+          notes: d.notes || "",
+        }));
+        setCalendarSignalEvents(mapped);
+      })
+      .catch(() => { /* helm server not running — silent */ });
+  }, []);
+
+  // ── Seed Events — known dates from signals, trips, and Dash schedule ──
+  // These populate the calendar even when Helm server is offline.
+  // Helm server /calendar-events takes precedence if running (deduped by id).
+  // Helper to generate daily rhythm events for a given date
+  const seedEvents = useMemo<LifeEvent[]>(() => {
+    const E = (id: string, title: string, lane: EventLane, type: EventType, status: EventStatus,
+               date: Date, startHour: number, endHour: number, tags: string[], notes: string): LifeEvent =>
+      ({ id, title, lane, type, status, date, startHour, endHour, tags, notes });
+
+    // ── Daily rhythm blocks (Apr 8–12 Houston trip) ──
+    const dailyRhythm = (day: number, label: string): LifeEvent[] => [
+      E(`seed-wake-apr${day}`, "Wake Up", "Health", "task", "not_started",
+        new Date(2026, 3, day), 6, 7, ["routine", "houston"],
+        `${label} — rise and prep.`),
+      E(`seed-walk-apr${day}`, "Walk & Stretch (30 min)", "Health", "task", "not_started",
+        new Date(2026, 3, day), 7, 8, ["routine", "health", "houston"],
+        "30 min walk or stretch — hotel area or nearby trail."),
+      E(`seed-coffee-apr${day}`, "Coffee", "Health", "task", "not_started",
+        new Date(2026, 3, day), 8, 9, ["routine", "houston"],
+        "Marriott breakfast bar or local spot."),
+    ];
+
+    // ── Family blocks (Apr 8–12) — this is a family trip ──
+    const familyBlocks: LifeEvent[] = [
+      E("seed-fam-apr8-arrive", "Family Arrives in Houston", "Family", "milestone", "not_started",
+        new Date(2026, 3, 8), 10, 11, ["houston", "family"],
+        "Landed at Hobby. Collect bags, pick up rental, settle in."),
+      E("seed-fam-apr8-settle", "Settle Into Hotel — Family Time", "Family", "task", "not_started",
+        new Date(2026, 3, 8), 16, 18, ["houston", "family"],
+        "Unpack at Marriott. Kids decompress. Explore hotel pool/area."),
+      E("seed-fam-apr8-dinner", "Family Dinner — First Night", "Family", "task", "not_started",
+        new Date(2026, 3, 8), 18, 20, ["houston", "family"],
+        "First dinner in Houston. Local spot near Energy Corridor."),
+      E("seed-fam-apr9-mainevent", "Main Event Katy — Family Outing", "Family", "task", "not_started",
+        new Date(2026, 3, 9), 11, 15, ["houston", "family", "activity"],
+        "Main Event, 24401 Katy Fwy, Katy TX 77494. Bowling, arcade, laser tag. Open 11am-midnight."),
+      E("seed-fam-apr9-dinner", "Family Dinner", "Family", "task", "not_started",
+        new Date(2026, 3, 9), 18, 20, ["houston", "family"],
+        "Evening meal together."),
+      E("seed-fam-apr10-typhoon", "Typhoon Texas Waterpark", "Family", "task", "not_started",
+        new Date(2026, 3, 10), 11, 17, ["houston", "family", "activity"],
+        "Typhoon Texas, 555 Katy Fort Bend Rd, Katy TX 77494. NOTE: Season may not start until mid-April — check typhoontexas.com/houston before going. If closed, backup: Topgolf Katy or Katy Mills Mall."),
+      E("seed-fam-apr10-dinner", "Family Dinner", "Family", "task", "not_started",
+        new Date(2026, 3, 10), 18, 20, ["houston", "family"],
+        "Evening meal together."),
+      E("seed-fam-apr11-prep", "Birthday Prep — Outfits & Photos", "Family", "task", "not_started",
+        new Date(2026, 3, 11), 14, 17, ["houston", "family", "birthday"],
+        "Get ready for the party. Touch of Vibrancy outfits. Camera gear prepped."),
+      E("seed-fam-apr11-birthday", "Taiwo & Kehinde's 50th Birthday", "Family", "milestone", "not_started",
+        new Date(2026, 3, 11), 18, 23, ["houston", "family", "anchor-event"],
+        "Mara Villa, 1419 Avenue D, Katy TX. Theme: Cheers to 50 Years. Dress: Touch of Vibrancy."),
+      E("seed-fam-apr12-packup", "Family Pack-Up & Goodbye", "Family", "task", "not_started",
+        new Date(2026, 3, 12), 9, 11, ["houston", "family"],
+        "Pack up, check out by 11am. Lunch nearby, then leave for IAH by 2:30pm (45 min drive + rental return)."),
+    ];
+
+    return [
+      // ── Pre-trip: Packing ──
+      E("seed-pack-start", "Packing — Start (Family of 4)", "Travel", "task", "not_started",
+        new Date(2026, 3, 6), 10, 12, ["houston", "packing"],
+        "Begin packing: outfits, camera gear, kids items, documents, chargers."),
+      E("seed-pack-verify", "Packing — Final Check", "Travel", "task", "not_started",
+        new Date(2026, 3, 7), 20, 21, ["houston", "packing", "action-required"],
+        "Final verify: chargers, camera batteries, SD cards, kids comfort items, Touch of Vibrancy outfits, docs."),
+
+      // ── Pre-trip: SW Check-in ──
+      E("seed-sw-checkin", "SW 455 Check-in (24hr)", "Travel", "task", "not_started",
+        new Date(2026, 3, 7), 7, 8, ["houston", "flight", "action-required"],
+        "Southwest Basic fare — check in EXACTLY at 7:25am CT. All 4 passengers."),
+
+      // ── Apr 8 (Wed) — Travel Day ──
+      ...dailyRhythm(8, "Travel day — up early for 7:25am flight"),
+      E("seed-sw455-departure", "✈ SW 455 MDW → HOU", "Travel", "milestone", "not_started",
+        new Date(2026, 3, 8), 7, 10, ["houston", "flight"],
+        "Depart 7:25am, arrive 10:05am. 4 passengers. Boeing 737 MAX8."),
+      E("seed-car-pickup", "Apex Mercedes GLC — Pickup (HOU)", "Travel", "task", "not_started",
+        new Date(2026, 3, 8), 10, 11, ["houston", "car-rental"],
+        "Pickup at Houston Hobby after landing. 800 mi included."),
+      E("seed-work-wed-monitor", "Morning — Monitoring & Reporting", "Work", "task", "not_started",
+        new Date(2026, 3, 8), 7, 9, ["work", "dba", "recurring"],
+        "Daily block — flying out at 7:25am, handle from phone if possible."),
+      E("seed-work-wed-1on1", "Yemi 1:1 (Teams)", "Work", "task", "not_started",
+        new Date(2026, 3, 8), 13, 14, ["work", "meeting", "1on1"],
+        "Wednesday recurring — join from Houston."),
+      E("seed-marriott-checkin", "Marriott Residence Inn — Check In", "Travel", "task", "not_started",
+        new Date(2026, 3, 8), 15, 16, ["houston", "hotel"],
+        "2 Bedroom Suite (2 queen + sofa bed). 4 guests. Energy Corridor."),
+
+      // ── Apr 9 (Thu) — Houston Day 2 ──
+      ...dailyRhythm(9, "Houston day 2"),
+      E("seed-work-thu-monitor", "Morning — Monitoring & Reporting", "Work", "task", "not_started",
+        new Date(2026, 3, 9), 7, 9, ["work", "dba", "recurring"],
+        "Daily block — remote from Houston."),
+      E("seed-work-thu-ets", "Weekly — ETS", "Work", "task", "not_started",
+        new Date(2026, 3, 9), 14, 15, ["work", "meeting"],
+        "Thursday recurring — remote from Houston."),
+
+      // ── Apr 10 (Fri) — Houston Day 3 ──
+      ...dailyRhythm(10, "Houston day 3"),
+      E("seed-work-fri-monitor", "Morning — Monitoring & Reporting", "Work", "task", "not_started",
+        new Date(2026, 3, 10), 7, 9, ["work", "dba", "recurring"],
+        "Daily block — remote from Houston."),
+      E("seed-work-fri-cloudkt", "DBA SYNC — Cloud KT (Teams)", "Work", "task", "not_started",
+        new Date(2026, 3, 10), 10, 11, ["work", "dba", "meeting"],
+        "Cloud Knowledge Transfer — Friday recurring. Remote from Houston."),
+      E("seed-work-fri-employbridge", "Employbridge Meeting", "Work", "task", "not_started",
+        new Date(2026, 3, 10), 13, 14, ["work", "meeting"],
+        "Employbridge — Friday. Remote from Houston."),
+
+      // ── Apr 11 (Sat) — Birthday Day ──
+      ...dailyRhythm(11, "Birthday day — pace yourself"),
+      E("seed-work-sat-monitor", "Morning — Monitoring & Reporting", "Work", "task", "not_started",
+        new Date(2026, 3, 11), 7, 9, ["work", "dba", "recurring"],
+        "Daily block — birthday day, wrap up early."),
+      E("seed-essay-04", "Essay 04 — Due", "Creative", "milestone", "not_started",
+        new Date(2026, 3, 11), 17, 18, ["dg", "writing", "deadline"],
+        "DG Essay Series — Essay 04 deadline. Friday April 11."),
+      E("seed-ua-checkin", "UA 2197 Check-in (24hr)", "Travel", "task", "not_started",
+        new Date(2026, 3, 11), 18, 19, ["houston", "flight"],
+        "Check in for return flight — opens 24hr before 6:40pm Apr 12."),
+
+      // ── Apr 12 (Sun) — Return Day ──
+      // Timeline: checkout 11am → lunch → leave hotel 2:30pm → 45min drive → arrive IAH 3:15pm
+      //           → rental drop-off 3:30pm → shuttle to terminal → security → gate by 5:00pm → board 6:10pm → depart 6:40pm
+      ...dailyRhythm(12, "Return day — check out by 11am"),
+      E("seed-marriott-checkout", "Marriott — Check Out", "Travel", "task", "not_started",
+        new Date(2026, 3, 12), 11, 12, ["houston", "hotel"],
+        "Check out by 11am. Lunch nearby, then head to IAH by 2:30pm."),
+      E("seed-apr12-lunch", "Lunch — Last Meal in Houston", "Family", "task", "not_started",
+        new Date(2026, 3, 12), 12, 14, ["houston", "family"],
+        "Last meal before heading to the airport."),
+      E("seed-apr12-leave", "Leave for IAH", "Travel", "task", "not_started",
+        new Date(2026, 3, 12), 14, 15, ["houston", "travel", "action-required"],
+        "Leave hotel/restaurant by 2:30pm. 45 min drive to IAH. Must arrive by 3:15pm for rental return + security."),
+      E("seed-car-dropoff", "Apex Mercedes GLC — Drop-off (IAH)", "Travel", "task", "not_started",
+        new Date(2026, 3, 12), 15, 16, ["houston", "car-rental"],
+        "Drop-off at IAH rental return. Allow 30 min for return process + shuttle to terminal."),
+      E("seed-apr12-security", "IAH Security + Gate", "Travel", "task", "not_started",
+        new Date(2026, 3, 12), 16, 17, ["houston", "flight"],
+        "Through security by 4:30pm. At gate by 5:00pm. Boarding ~6:10pm."),
+      E("seed-ua2197-return", "✈ UA 2197 IAH → ORD", "Travel", "milestone", "not_started",
+        new Date(2026, 3, 12), 18, 22, ["houston", "flight"],
+        "Depart 6:40pm, arrive 9:31pm. Airbus A321neo. Seats 39A-D."),
+
+      // ── Family blocks ──
+      ...familyBlocks,
+
+      // ── Pre-trip Work (Mon Apr 6, Tue Apr 7) ──
+      E("seed-work-mon-monitor", "Morning — Monitoring & Reporting", "Work", "task", "not_started",
+        new Date(2026, 3, 6), 7, 9, ["work", "dba", "recurring"],
+        "Daily DBA monitoring and reporting block."),
+      E("seed-work-mon-standup", "DBA Team Weekly Stand Up", "Work", "task", "not_started",
+        new Date(2026, 3, 6), 9, 10, ["work", "dba", "meeting"],
+        "THE DB A-TEAM — Monday recurring."),
+      E("seed-work-mon-helpdesk", "Help Desk Sync (Teams)", "Work", "task", "not_started",
+        new Date(2026, 3, 6), 10, 11, ["work", "meeting"],
+        "Help desk coordination — Microsoft Teams."),
+      E("seed-work-tue-monitor", "Morning — Monitoring & Reporting", "Work", "task", "not_started",
+        new Date(2026, 3, 7), 7, 9, ["work", "dba", "recurring"],
+        "Daily DBA monitoring and reporting block."),
+
+      // ── Dash Scheduled Releases (nightly Apr 5–12) ──
+      ...[5,6,7,8,9,10,11,12].map(d =>
+        E(`seed-dash-nightly-apr${d}`, "Dash Nightwatch", "Work", "task", "not_started",
+          new Date(2026, 3, d), 22, 23, ["dash", "helm", "automated"],
+          d >= 8 ? "Nightly audit — runs while traveling." : "Nightly audit — health checks, trend detection.")
+      ),
+
+      // ── Pulse Monthly ──
+      E("seed-pulse-may1", "Pulse Card Generation (May)", "Creative", "task", "not_started",
+        new Date(2026, 4, 1), 7, 8, ["pulse", "ideka", "automated"],
+        "Monthly pulse card generation — select quotes, pair with images, update pulse_builder.py."),
+    ];
+  }, []);
+
   // Persist events whenever they change
   useEffect(() => { lsSet(LS_EVENTS, serializeEvents(events)); }, [events]);
   useEffect(() => { lsSet(LS_RECURRING, recurring); }, [recurring]);
   useEffect(() => { lsSet(LS_NOTES, dayNotes); }, [dayNotes]);
+
+  // ── Sync MyAtlas state to Helm server (bidirectional bridge) ──
+  // Writes events + recurring + notes to disk via helm_web.py /sync
+  // so helm_suggest.py can generate calendar-aware suggestions.
+  useEffect(() => {
+    const payload = {
+      events: serializeEvents(events),
+      recurring: recurring,
+      notes: dayNotes,
+      synced_at: new Date().toISOString(),
+    };
+    fetch("http://localhost:7777/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => { /* helm server not running — silent */ });
+  }, [events, recurring, dayNotes]);
 
   // Day note helpers
   const getNoteForDate = useCallback((d: Date) => {
@@ -772,16 +1348,49 @@ export default function App() {
     });
   }, []);
 
-  // Merge real events + expanded recurring for a given date
+  // Merge real events + expanded recurring + calendar signal events + seed events for a given date
   const eventsForDate = useCallback((d: Date): LifeEvent[] => {
-    const real = events.filter(e => startOfDay(e.date).getTime()===startOfDay(d).getTime());
+    const dayStart = startOfDay(d).getTime();
+    const real = events.filter(e => startOfDay(e.date).getTime()===dayStart);
     const recurExpanded = expandRecurring(recurring, d);
-    // Don't double-show if a real event has the same recur-id
-    const realIds = new Set(real.map(e => e.id));
-    return [...real, ...recurExpanded.filter(r => !realIds.has(r.id))];
-  }, [events, recurring]);
+    const calSignals = calendarSignalEvents.filter(e => startOfDay(e.date).getTime()===dayStart);
+    const seeds = seedEvents.filter(e => startOfDay(e.date).getTime()===dayStart);
+    // Don't double-show if a real event or calendar signal has the same id
+    const seenIds = new Set(real.map(e => e.id));
+    const deduped = (arr: LifeEvent[]) => arr.filter(e => { if (seenIds.has(e.id)) return false; seenIds.add(e.id); return true; });
+    return [...real, ...deduped(recurExpanded), ...deduped(calSignals), ...deduped(seeds)];
+  }, [events, recurring, calendarSignalEvents, seedEvents]);
 
   const addOrUpdateEvent = useCallback((e: LifeEvent) => {
+    // ── Tag-to-recurring promotion ──
+    // If the user tags an event as "Daily", "Weekdays", or "Weekly",
+    // auto-promote it into the recurring system and remove from one-time events.
+    const tagLower = (e.tags || []).map(t => t.toLowerCase());
+    const recurTag = tagLower.find(t => ["daily","weekdays","weekly"].includes(t));
+    if (recurTag) {
+      const pattern = recurTag as RecurPattern;
+      const recurEvent: RecurringEvent = {
+        id: e.id,
+        title: e.title,
+        lane: e.lane,
+        type: e.type,
+        startHour: e.startHour ?? 9,
+        endHour: e.endHour ?? 10,
+        notes: e.notes,
+        tags: e.tags.filter(t => !["daily","weekdays","weekly","recurring"].includes(t.toLowerCase())),
+        pattern,
+        createdAt: new Date().toISOString(),
+      };
+      setRecurring(prev => {
+        const idx = prev.findIndex(x => x.id === recurEvent.id);
+        if (idx >= 0) { const n = [...prev]; n[idx] = recurEvent; return n; }
+        return [...prev, recurEvent];
+      });
+      // Remove from one-time events if it was there
+      setEvents(prev => prev.filter(x => x.id !== e.id));
+      return;
+    }
+
     setEvents(prev => {
       const idx = prev.findIndex(x => x.id === e.id);
       if (idx >= 0) { const n = [...prev]; n[idx] = e; return n; }
@@ -903,7 +1512,7 @@ export default function App() {
         {/* Body */}
         <div style={{padding:22,flex:1,minHeight:0,overflowY:"auto"}}>
           {mode === "helm" ? (
-            <HelmView palette={palette} travelTrips={travelTrips}/>
+            <HelmView palette={palette} travelTrips={travelTrips} helmToken={helmToken}/>
           ) : mode === "pods" ? (
             <PodsTimeline
               currentPodStartYear={2026} palette={palette} travelTrips={travelTrips}
@@ -2218,13 +2827,20 @@ function HelmDigest() {
   );
 }
 
-function HelmView({ palette: _palette, travelTrips: _travelTrips }: { palette: Palette; travelTrips: TravelTrip[] }) {
+function HelmView({ palette: _palette, travelTrips: _travelTrips, helmToken }: { palette: Palette; travelTrips: TravelTrip[]; helmToken?: string }) {
   const [signals, setSignals] = useState<HelmSignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+  const [deploying, setDeploying] = useState(false);
+  const [deployStatus, setDeployStatus] = useState<string | null>(null);
+  const [restartPassword, setRestartPassword] = useState("");
+  const [restarting, setRestarting] = useState(false);
+  const [restartStatus, setRestartStatus] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadSignals = useCallback(() => {
     setLoading(true);
     fetch("http://localhost:7777/signals")
       .then(r => {
@@ -2232,7 +2848,6 @@ function HelmView({ palette: _palette, travelTrips: _travelTrips }: { palette: P
         return r.json();
       })
       .then((data: HelmSignal[]) => {
-        // Normalise: strip raw JSON blobs from signal field
         const clean = data.map(s => {
           let sig = s.signal || "";
           if (sig.startsWith("```")) {
@@ -2250,6 +2865,78 @@ function HelmView({ palette: _palette, travelTrips: _travelTrips }: { palette: P
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { loadSignals(); }, [loadSignals]);
+
+  // ── Refresh pipeline: fetches new emails + regenerates suggestions ──
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (helmToken) headers["Authorization"] = `Bearer ${helmToken}`;
+    fetch("http://localhost:7777/refresh", { method: "POST", headers })
+      .then(r => r.json())
+      .then(() => {
+        setLastRefresh(new Date().toLocaleTimeString(undefined, { hour:"numeric", minute:"2-digit" }));
+        loadSignals(); // reload after pipeline runs
+      })
+      .catch(() => {})
+      .finally(() => setRefreshing(false));
+  }, [loadSignals, helmToken]);
+
+  // ── Deploy: rebuild MyAtlas .app from latest source code ──
+  const handleDeploy = useCallback(() => {
+    if (!confirm("Rebuild MyAtlas? This may take a few minutes. You'll need to quit and reopen the app when done.")) return;
+    setDeploying(true);
+    setDeployStatus("Building…");
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (helmToken) headers["Authorization"] = `Bearer ${helmToken}`;
+    fetch("http://localhost:7777/deploy", { method: "POST", headers })
+      .then(r => r.json())
+      .then((data: { ok: boolean; steps?: Array<{ step: string; exit_code: number }> }) => {
+        if (data.ok) {
+          setDeployStatus("Build complete — quit & reopen MyAtlas to apply");
+        } else {
+          const failed = data.steps?.find(s => s.exit_code !== 0);
+          setDeployStatus(`Build failed at ${failed?.step || "unknown"}`);
+        }
+      })
+      .catch(() => setDeployStatus("Deploy request failed — is Helm server running?"))
+      .finally(() => setDeploying(false));
+  }, [helmToken]);
+
+  // ── Restart: password-gated Helm server recovery via Tauri Rust backend ──
+  const handleRestart = useCallback(async () => {
+    if (!restartPassword.trim()) return;
+    setRestarting(true);
+    setRestartStatus("Restarting Helm server…");
+    try {
+      const result = await invoke<string>("restart_helm_server", { password: restartPassword });
+      setRestartStatus(result);
+      setRestartPassword("");
+      setError(null); // clear error state so HelmView exits error UI
+      setTimeout(() => {
+        loadSignals();
+        setRestartStatus(null);
+      }, 1500);
+    } catch (e: unknown) {
+      const err = String(e);
+      if (err.includes("WRONG_PASSWORD")) {
+        setRestartStatus("Incorrect password");
+      } else if (err.includes("NO_HASH_FILE")) {
+        setRestartStatus("Restart not configured — contact team");
+      } else if (err.includes("PORT_STILL_BUSY")) {
+        setRestartStatus("Could not free port 7777 — try again in 30s");
+      } else if (err.includes("SPAWN_FAILED")) {
+        setRestartStatus("Could not start server — check Python installation");
+      } else if (err.includes("TIMEOUT")) {
+        setRestartStatus("Server started but not responding — check helm_web.py for errors");
+      } else {
+        setRestartStatus(`Restart failed: ${err}`);
+      }
+    } finally {
+      setRestarting(false);
+    }
+  }, [restartPassword, loadSignals]);
 
   const allTags = useMemo(() => {
     const s = new Set<string>();
@@ -2283,17 +2970,105 @@ function HelmView({ palette: _palette, travelTrips: _travelTrips }: { palette: P
       <div style={{fontSize:13,color:"#b84060",marginBottom:8,fontWeight:600}}>
         ⚠ Could not reach Helm server
       </div>
-      <div style={{fontSize:12,color:"rgba(20,19,18,0.50)"}}>
-        Make sure <code style={{fontSize:11}}>python3 ~/Project_Atlas/helm-capture/helm_web.py</code> is running on port 7777.
+      <div style={{fontSize:12,color:"rgba(20,19,18,0.50)",marginBottom:16}}>
+        Enter your restart password to bring the server back online.
       </div>
-      <div style={{marginTop:6,fontSize:11,color:"rgba(20,19,18,0.35)"}}>
-        Error: {error}
+
+      {/* Password input + restart button */}
+      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+        <input
+          type="password"
+          placeholder="Restart password"
+          value={restartPassword}
+          onChange={e => setRestartPassword(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") handleRestart(); }}
+          disabled={restarting}
+          style={{
+            flex:1, padding:"8px 12px", fontSize:12,
+            border:"1px solid rgba(20,19,18,0.15)", borderRadius:8,
+            background:"rgba(255,255,255,0.80)",
+            color:"rgba(20,19,18,0.70)", outline:"none",
+            letterSpacing:"0.04em",
+          }}
+        />
+        <button
+          onClick={handleRestart}
+          disabled={restarting || !restartPassword.trim()}
+          style={{
+            padding:"8px 16px", fontSize:11, fontWeight:600,
+            letterSpacing:"0.06em",
+            background: restarting ? "rgba(20,19,18,0.05)" : "#b84060",
+            color: restarting ? "rgba(20,19,18,0.30)" : "#fff",
+            border:"none", borderRadius:8,
+            cursor: restarting ? "wait" : "pointer",
+            transition:"all 0.15s",
+          }}>
+          {restarting ? "Restarting…" : "⟳ Restart Server"}
+        </button>
+      </div>
+
+      {/* Password hint */}
+      <div style={{fontSize:10,color:"rgba(20,19,18,0.30)",letterSpacing:"0.04em",marginBottom:8}}>
+        Hint: shoulder shrug
+      </div>
+
+      {/* Status feedback */}
+      {restartStatus && (
+        <div style={{fontSize:11, padding:"6px 10px", borderRadius:6, marginBottom:8,
+          background: restartStatus.includes("restarted") ? "rgba(40,120,60,0.08)" : "rgba(180,64,96,0.08)",
+          color: restartStatus.includes("restarted") ? "rgba(40,120,60,0.8)" : "rgba(180,64,96,0.8)",
+          letterSpacing:"0.03em"}}>
+          {restartStatus}
+        </div>
+      )}
+
+      {/* Debug info */}
+      <div style={{fontSize:10,color:"rgba(20,19,18,0.25)",marginTop:8}}>
+        Debug: {error}
       </div>
     </div>
   );
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:0}}>
+
+      {/* Refresh bar */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:8,
+        padding:"6px 0",marginBottom:4}}>
+        {lastRefresh && (
+          <span style={{fontSize:10,color:"rgba(20,19,18,0.35)",letterSpacing:"0.06em"}}>
+            Last refresh: {lastRefresh}
+          </span>
+        )}
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          style={{
+            background:"transparent",border:"1px solid rgba(20,19,18,0.15)",
+            borderRadius:6,padding:"4px 12px",fontSize:11,letterSpacing:"0.06em",
+            color: refreshing ? "rgba(20,19,18,0.30)" : "rgba(20,19,18,0.55)",
+            cursor: refreshing ? "wait" : "pointer",transition:"all 0.15s",
+          }}>
+          {refreshing ? "Refreshing…" : "⟳ Refresh pipeline"}
+        </button>
+        <button
+          onClick={handleDeploy}
+          disabled={deploying}
+          style={{
+            background:"transparent",border:"1px solid rgba(20,19,18,0.10)",
+            borderRadius:6,padding:"4px 12px",fontSize:11,letterSpacing:"0.06em",
+            color: deploying ? "rgba(20,19,18,0.30)" : "rgba(20,19,18,0.40)",
+            cursor: deploying ? "wait" : "pointer",transition:"all 0.15s",
+          }}>
+          {deploying ? "Building…" : "⬡ Deploy"}
+        </button>
+      </div>
+      {deployStatus && (
+        <div style={{textAlign:"right",fontSize:10,color: deployStatus.includes("complete") ? "rgba(40,120,60,0.7)" : "rgba(180,64,96,0.7)",
+          padding:"2px 0",letterSpacing:"0.04em"}}>
+          {deployStatus}
+        </div>
+      )}
 
       {/* Intelligence Digest */}
       <HelmDigest />
@@ -2425,6 +3200,12 @@ function HelmView({ palette: _palette, travelTrips: _travelTrips }: { palette: P
           style={{fontSize:11,color:"#5a82ff",textDecoration:"none",letterSpacing:"0.06em"}}>
           ⬡ Open Helm Capture →
         </a>
+      </div>
+
+      {/* Build version stamp — stale binary detection */}
+      <div style={{marginTop:8,textAlign:"right",fontSize:9,color:"rgba(20,19,18,0.18)",
+        letterSpacing:"0.08em",fontFamily:"monospace"}}>
+        v{MYATLAS_BUILD} · {MYATLAS_BUILD_DATE}
       </div>
     </div>
   );
